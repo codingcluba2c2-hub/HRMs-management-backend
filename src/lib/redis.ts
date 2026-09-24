@@ -4,6 +4,8 @@ import Redis from 'ioredis';
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 
 const redis = new Redis(REDIS_URL, {
+  lazyConnect: true,
+  enableOfflineQueue: false,
   maxRetriesPerRequest: null,
   retryStrategy(times: number) {
     // Only retry 3 times, then stop to prevent hanging if Redis isn't installed locally
