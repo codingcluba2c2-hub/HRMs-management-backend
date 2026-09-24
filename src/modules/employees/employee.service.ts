@@ -263,18 +263,11 @@ export class EmployeeService {
     const employee = await prisma.employee.findUnique({ where: { id } });
     if (!employee) throw new Error('Employee not found');
 
-    // Use soft delete
+    // Update status to TERMINATED
     await prisma.employee.update({
       where: { id },
-      data: { isDeleted: true, status: 'TERMINATED' }
+      data: { status: 'TERMINATED' }
     });
-
-    if (employee.userId) {
-      await prisma.user.update({
-        where: { id: employee.userId },
-        data: { isDeleted: true }
-      });
-    }
 
     // Invalidate caches
     const { default: redis } = await import('../../lib/redis');
@@ -376,7 +369,7 @@ export class EmployeeService {
       }
     });
 
-    if (!employee || employee.isDeleted) throw new Error('Not found');
+    if (!employee) throw new Error('Not found');
     
     if (employee.accountNumber) {
       try { employee.accountNumber = decrypt(employee.accountNumber); } catch (e) {}
@@ -390,7 +383,7 @@ export class EmployeeService {
       case 'DELETE':
         await prisma.employee.updateMany({
           where: { id: { in: employeeIds } },
-          data: { status: 'TERMINATED', isDeleted: true }
+          data: { status: 'TERMINATED' }
         });
         break;
       case 'ACTIVATE':

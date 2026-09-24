@@ -6,14 +6,14 @@ console.log('🚀 Starting Background Worker Process...');
 
 const connection = redis; // Use our existing robust Redis connection
 
-const emailQueueWorker = new Worker('emailQueue', async job => {
+const emailQueueWorker = new Worker('emailQueue', async (job: any) => {
   console.log(`Processing email job: ${job.id} for ${job.data.email}`);
   // Simulate heavy email sending
   await new Promise(res => setTimeout(res, 2000));
   console.log(`✅ Email sent to ${job.data.email}`);
 }, { connection: redis as any });
 
-const bulkImportWorker = new Worker('bulkImportQueue', async job => {
+const bulkImportWorker = new Worker('bulkImportQueue', async (job: any) => {
   console.log(`Processing bulk import job: ${job.id}`);
   const { employees, hrAdminId } = job.data;
   
@@ -24,11 +24,11 @@ const bulkImportWorker = new Worker('bulkImportQueue', async job => {
   console.log(`✅ Bulk import completed for job ${job.id}`);
 }, { connection: redis as any });
 
-emailQueueWorker.on('failed', (job, err) => {
+emailQueueWorker.on('failed', (job: any, err: any) => {
   console.error(`${job?.id} has failed with ${err.message}`);
 });
 
-bulkImportWorker.on('failed', (job, err) => {
+bulkImportWorker.on('failed', (job: any, err: any) => {
   console.error(`${job?.id} has failed with ${err.message}`);
 });
 

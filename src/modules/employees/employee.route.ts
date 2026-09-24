@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { 
   createEmployee, getEmployees, updateEmployee, deleteEmployee,
   getDashboardSummary, getAnalytics, getEmployeeDetails, bulkOperations,
-  updateEmployeeOrganization
+  updateEmployeeOrganization, bulkCreateEmployee
 } from './employee.controller';
 import { authenticate } from '../../middlewares/authMiddleware';
 import { validateRequest } from '../../middlewares/validateRequest';

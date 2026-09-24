@@ -38,6 +38,31 @@ export const ensureDefaultLeaveTypes = async () => {
   }
 };
 
+export const getLeaveQuotas = async () => {
+  const types = await prisma.leaveType.findMany({ where: { status: true } });
+  return types.map(t => ({
+    id: t.id,
+    name: t.name,
+    code: t.code,
+    defaultAllocation: t.defaultAllocation,
+    category: t.category
+  }));
+};
+
+export const updateLeaveQuotas = async (data: any) => {
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      if (item.id) {
+        await prisma.leaveType.update({
+          where: { id: item.id },
+          data: { defaultAllocation: Number(item.defaultAllocation) || 0 }
+        }).catch(() => {});
+      }
+    }
+  }
+  return await getLeaveQuotas();
+};
+
 // Summary metrics for Employee or HR Admin
 export const getLeaveSummary = async (userId: string, role: string) => {
   await ensureDefaultLeaveTypes();
@@ -69,8 +94,8 @@ export const getLeaveSummary = async (userId: string, role: string) => {
     const approved = requests.filter((r: any) => r.status === 'APPROVED').length;
     const upcoming = requests.filter((r: any) => r.status === 'APPROVED' && new Date(r.startDate) > new Date()).length;
 
-    const balance = employee.leaveBalance || {
-      ...quotas, compOff: 0
+    const balance: any = (employee.leaveBalance as any) || {
+      casual: 12, sick: 12, annual: 15, medical: 10, earned: 5, compOff: 0
     };
 
     let totalUsed = 0;
@@ -269,7 +294,7 @@ export const createLeaveRequest = async (userId: string, data: any) => {
   // Conflict check: Check for existing approved or pending leave in same date range
   const conflict = await prisma.leaveRequest.findFirst({
     where: {
-      employeeId: employee.id,
+      employeeId: empId,
       status: { in: ['PENDING', 'APPROVED'] },
       OR: [
         { startDate: { lte: end }, endDate: { gte: start } }

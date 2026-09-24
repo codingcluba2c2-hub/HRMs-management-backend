@@ -2,6 +2,9 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../utils/ApiResponse';
 import { AuthRequest } from '../../middlewares/authMiddleware';
 import { EmployeeService } from './employee.service';
+import { prisma } from '../../lib/prisma';
+import bcrypt from 'bcryptjs';
+import { decrypt } from '../../utils/encryption';
 
 export const createEmployee = async (req: AuthRequest, res: Response) => {
   try {
@@ -142,8 +145,6 @@ export const getEmployees = async (req: AuthRequest, res: Response) => {
         }).catch(() => {});
       }
     }
-    filter.isDeleted = false; // ensure we skip soft-deleted
-
     let filter: any = {};
 
     if (search) {
@@ -172,7 +173,7 @@ export const getEmployees = async (req: AuthRequest, res: Response) => {
       orderBy: { createdAt: 'desc' }
     });
 
-    const decryptedEmployees = employees.map(emp => {
+    const decryptedEmployees = employees.map((emp: any) => {
       if (emp.accountNumber) {
         try { emp.accountNumber = decrypt(emp.accountNumber); } catch (e) {}
       }

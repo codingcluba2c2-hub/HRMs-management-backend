@@ -153,7 +153,7 @@ export const createDesignation = async (req: Request, res: Response) => {
     }
 
     const desig = await prisma.designation.create({
-      data: { name, level: Number(level) || 1, departmentId, description }
+      data: { name, level: String(level || 'Associate'), departmentId, description }
     });
 
     return res.status(201).json(new ApiResponse(true, 'Designation created successfully', desig));
@@ -176,7 +176,7 @@ export const updateDesignation = async (req: Request, res: Response) => {
 
     const desig = await prisma.designation.update({
       where: { id },
-      data: { name, level: Number(level) || 1, departmentId, description }
+      data: { name, level: String(level || 'Associate'), departmentId, description }
     });
 
     return res.status(200).json(new ApiResponse(true, 'Designation updated successfully', desig));

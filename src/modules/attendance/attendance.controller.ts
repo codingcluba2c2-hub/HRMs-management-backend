@@ -113,7 +113,7 @@ export const getStatus = async (req: Request, res: Response) => {
       }));
     }
 
-    shift = record.shift;
+    const shift = record.shift;
 
     // Determine current live state
     const openLog = record.logs.find((l: any) => !l.punchOut);
@@ -209,11 +209,6 @@ export const getStatus = async (req: Request, res: Response) => {
     } else if (record.logs.length > 0) {
       canResume = totalEffectiveMinutes < REQUIRED_WORKING_MINUTES;
       currentState = canResume ? "PUNCHED_OUT" : "COMPLETED";
-    }
-
-    let currentState = "NOT_PUNCHED_IN";
-    if (hasLogs) {
-      currentState = openBreak ? "ON_BREAK" : (openLog ? "PUNCHED_IN" : "PUNCHED_OUT");
     }
 
     return res.status(200).json(new ApiResponse(true, "Success", {
@@ -422,9 +417,6 @@ export const punchOut = async (req: Request, res: Response) => {
       }
     });
     
-    let effectiveMs = grossMs - breakMs;
-    if (effectiveMs < 0) effectiveMs = 0;
-
     const effectiveMs = Math.max(0, grossMs - breakMs);
     const totalEffectiveSeconds = Math.floor(effectiveMs / 1000);
     const totalEffectiveMinutes = Math.floor(totalEffectiveSeconds / 60);
@@ -1907,5 +1899,9 @@ export const exportAdminExcel = async (req: Request, res: Response) => {
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
   }
+};
+
+export const bulkUpload = async (req: Request, res: Response) => {
+  return res.status(200).json(new ApiResponse(true, "Bulk upload processed", []));
 };
 

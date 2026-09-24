@@ -4,7 +4,8 @@ import { decrypt } from '../../utils/encryption';
 import { generatePayslipPdf } from '../../utils/pdfGenerator';
 import { sendPayrollEmail } from '../../utils/mailer';
 
-export const createPayrollRecord = async (data: any) => {
+export const createPayrollRecord = async (arg1: any, arg2?: any) => {
+  const data = arg2 !== undefined ? arg2 : arg1;
   const employee = await prisma.employee.findUnique({ where: { id: data.employeeId } });
   if (!employee) throw new Error("Employee not found");
 
@@ -191,8 +192,6 @@ export const getPayrollSummary = async (userId: string, role: string) => {
     };
   }
 };
-
-import { generatePayslipPdf } from '../../utils/pdfGenerator';
 
 export const getPayrollRecords = async (userId: string, role: string, filters: any) => {
   let whereClause: any = {};
@@ -466,65 +465,7 @@ export const getTimelineActivities = async (userId: string, role: string) => {
   ];
 };
 
-export const createPayrollRecord = async (userId: string, data: any) => {
-  const {
-    employeeId,
-    month,
-    year,
-    basicSalary,
-    hra,
-    bonus,
-    deductions,
-    workingDays,
-    paidDays,
-    paymentDate,
-    transactionId,
-    status
-  } = data;
 
-  const basic = parseFloat(basicSalary) || 0;
-  const houseRent = parseFloat(hra) || basic * 0.4;
-  const bon = parseFloat(bonus) || 0;
-  const ded = parseFloat(deductions) || 0;
-  const gross = basic + houseRent + bon;
-  const net = gross - ded;
-
-  const record = await prisma.payroll.create({
-    data: {
-      employeeId,
-      month: parseInt(month),
-      year: parseInt(year),
-      basicSalary: basic,
-      hra: houseRent,
-      bonus: bon,
-      deductions: ded,
-      grossSalary: gross,
-      netSalary: net,
-      workingDays: parseInt(workingDays) || 30,
-      paidDays: parseInt(paidDays) || parseInt(workingDays) || 30,
-      paymentDate: new Date(paymentDate || Date.now()),
-      transactionId: transactionId || null,
-      status: status || 'PAID'
-    },
-    include: {
-      employee: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          email: true,
-          employeeId: true,
-          bankName: true,
-          accountNumber: true,
-          department: { select: { name: true } },
-          designation: { select: { name: true } }
-        }
-      }
-    }
-  });
-
-  return record;
-};
 
 export const deletePayrollRecord = async (id: string) => {
   return await prisma.payroll.delete({

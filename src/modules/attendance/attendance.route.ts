@@ -18,7 +18,8 @@ import {
   hrPunchOut,
   hrResumeWork,
   hrCorrectAttendance,
-  exportAdminExcel
+  exportAdminExcel,
+  bulkUpload
 } from './attendance.controller';
 import { createCorrection, getMyCorrections, getPendingCorrections, approveCorrection, rejectCorrection } from './attendanceCorrection.controller';
 import { getSummary, getOperationsList, getAnalytics, getRecentActivities } from './attendanceOperations.controller';

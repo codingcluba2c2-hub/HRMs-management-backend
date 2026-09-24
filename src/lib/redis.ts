@@ -5,7 +5,7 @@ const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 
 const redis = new Redis(REDIS_URL, {
   maxRetriesPerRequest: null,
-  retryStrategy(times) {
+  retryStrategy(times: number) {
     // Only retry 3 times, then stop to prevent hanging if Redis isn't installed locally
     if (times > 3) {
       console.warn('[REDIS] Connection failed after 3 retries. Disabling cache.');
