@@ -160,7 +160,9 @@ const startServer = async () => {
   }
 };
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
 
 
 // Graceful Shutdown for Nodemon & typical termination signals
