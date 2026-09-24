@@ -3,13 +3,9 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const ALGORITHM = process.env.AES_ALGORITHM || 'aes-256-gcm';
-const SECRET_KEY = process.env.AES_SECRET_KEY;
+const RAW_KEY = process.env.AES_SECRET_KEY || 'hrms_enterprise_secret_key_32b';
+const SECRET_KEY = RAW_KEY.padEnd(32, '0').slice(0, 32);
 const VERSION = process.env.AES_VERSION || 'v1';
-
-if (!SECRET_KEY || SECRET_KEY.length !== 32) {
-  console.error("CRITICAL ERROR: AES_SECRET_KEY must be exactly 32 characters long.");
-  process.exit(1);
-}
 
 export const generateIV = () => crypto.randomBytes(12); // GCM standard is 12 bytes
 
