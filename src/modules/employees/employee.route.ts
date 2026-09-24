@@ -5,6 +5,8 @@ import {
   updateEmployeeOrganization
 } from './employee.controller';
 import { authenticate } from '../../middlewares/authMiddleware';
+import { validateRequest } from '../../middlewares/validateRequest';
+import { createEmployeeSchema, updateEmployeeSchema, bulkCreateEmployeeSchema } from './employee.schema';
 
 const router = Router();
 
@@ -14,15 +16,16 @@ router.use(authenticate); // All routes require authentication
 router.get('/dashboard', getDashboardSummary);
 router.get('/analytics', getAnalytics);
 router.post('/bulk', bulkOperations);
+router.post('/bulk-create', validateRequest({ body: bulkCreateEmployeeSchema }), bulkCreateEmployee);
 
 router.route('/')
-  .post(createEmployee)
+  .post(validateRequest({ body: createEmployeeSchema }), createEmployee)
   .get(getEmployees);
 
 router.patch('/:id/organization', updateEmployeeOrganization);
 
 router.route('/:id')
-  .put(updateEmployee)
+  .put(validateRequest({ body: updateEmployeeSchema }), updateEmployee)
   .delete(deleteEmployee);
 
 router.get('/:id/details', getEmployeeDetails);

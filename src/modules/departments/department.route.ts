@@ -9,6 +9,8 @@ import {
   getOrganizationOverview
 } from './department.controller';
 import { authenticate } from '../../middlewares/authMiddleware';
+import { validateRequest } from '../../middlewares/validateRequest';
+import { createDepartmentSchema, updateDepartmentSchema } from './department.schema';
 
 const router = Router();
 
@@ -68,7 +70,7 @@ router.get('/summary', getDepartmentSummary);
  *         $ref: '#/components/responses/UnauthorizedError'
  */
 router.route('/')
-  .post(createDepartment)
+  .post(validateRequest({ body: createDepartmentSchema }), createDepartment)
   .get(getDepartments);
 
 router.post('/:id/manager', assignDepartmentManager);
@@ -131,7 +133,7 @@ router.post('/:id/manager', assignDepartmentManager);
  *         $ref: '#/components/responses/NotFoundError'
  */
 router.route('/:id')
-  .put(updateDepartment)
+  .put(validateRequest({ body: updateDepartmentSchema }), updateDepartment)
   .delete(deleteDepartment);
 
 export default router;

@@ -11,10 +11,12 @@ export const getDashboardStats = async (req: AuthRequest, res: Response) => {
     
     let data = {};
 
+    const trend = (req.query.trend as string) || '30d';
+
     if (userRole === 'SUPER_ADMIN') {
       data = await getSuperAdminStats();
     } else if (userRole === 'HR_MANAGER' || userRole === 'HR_ADMIN') {
-      data = await getHRManagerStats();
+      data = await getHRManagerStats(trend);
     } else {
       data = await getEmployeeStats(req.user?.id || '');
     }

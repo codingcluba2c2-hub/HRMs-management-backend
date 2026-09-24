@@ -1,12 +1,7 @@
-import { prisma } from '../../lib/prisma';
 import { Request, Response } from 'express';
-
 import { ApiResponse } from '../../utils/ApiResponse';
 import { AuthRequest } from '../../middlewares/authMiddleware';
-import bcrypt from 'bcryptjs';
-import { decrypt } from '../../utils/encryption';
-
-
+import { EmployeeService } from './employee.service';
 
 export const createEmployee = async (req: AuthRequest, res: Response) => {
   try {
@@ -91,7 +86,26 @@ export const createEmployee = async (req: AuthRequest, res: Response) => {
 
     res.status(201).json(new ApiResponse(true, 'Employee created successfully', employee));
   } catch (error: any) {
-    res.status(500).json(new ApiResponse(false, error.message));
+    res.status(400).json(new ApiResponse(false, error.message));
+  }
+};
+
+export const bulkCreateEmployee = async (req: AuthRequest, res: Response) => {
+  try {
+    const { employees } = req.body;
+    if (!employees || !Array.isArray(employees)) {
+      return res.status(400).json(new ApiResponse(false, "Invalid data format"));
+    }
+
+    const { successCount, errors } = await EmployeeService.bulkCreateEmployee(employees, req.user?.id);
+
+    if (errors.length > 0) {
+      return res.status(207).json(new ApiResponse(true, `Bulk import finished with errors. Success: ${successCount}, Failed: ${errors.length}`, { successCount, errors }));
+    }
+
+    return res.status(200).json(new ApiResponse(true, `Bulk import completed successfully. Success: ${successCount}`));
+  } catch (error: any) {
+    return res.status(500).json(new ApiResponse(false, error.message));
   }
 };
 
@@ -128,6 +142,7 @@ export const getEmployees = async (req: AuthRequest, res: Response) => {
         }).catch(() => {});
       }
     }
+    filter.isDeleted = false; // ensure we skip soft-deleted
 
     let filter: any = {};
 
@@ -233,30 +248,7 @@ export const updateEmployee = async (req: Request, res: Response) => {
 export const deleteEmployee = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-
-    const employee = await prisma.employee.findUnique({ where: { id } });
-    if (!employee) {
-      return res.status(404).json(new ApiResponse(false, 'Employee not found'));
-    }
-
-    // Delete all related records manually to avoid foreign key constraints
-    await prisma.$transaction([
-      prisma.attendanceLog.deleteMany({ where: { attendance: { employeeId: id } } }),
-      prisma.breakSession.deleteMany({ where: { attendance: { employeeId: id } } }),
-      prisma.attendanceRecord.deleteMany({ where: { employeeId: id } }),
-      prisma.attendanceCorrection.deleteMany({ where: { employeeId: id } }),
-      prisma.leaveRequest.deleteMany({ where: { employeeId: id } }),
-      prisma.payroll.deleteMany({ where: { employeeId: id } }),
-      prisma.employeeDocument.deleteMany({ where: { employeeId: id } }),
-      // Finally delete employee
-      prisma.employee.delete({ where: { id } })
-    ]);
-
-    // If a user account was linked, delete it as well
-    if (employee.userId) {
-      await prisma.user.delete({ where: { id: employee.userId } });
-    }
-
+    await EmployeeService.deleteEmployee(id);
     res.status(200).json(new ApiResponse(true, 'Employee deleted successfully'));
   } catch (error: any) {
     res.status(500).json(new ApiResponse(false, error.message));
@@ -273,43 +265,9 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
     try { active = await prisma.employee.count({ where: { ...filter, status: 'ACTIVE' } }); } catch (e) { console.error("active count failed", e); }
     try { inactive = await prisma.employee.count({ where: { ...filter, status: 'INACTIVE' } }); } catch (e) { console.error("inactive count failed", e); }
     
-    try {
-      onLeave = await prisma.leaveRequest.count({ 
-        where: { 
-          status: 'APPROVED',
-          startDate: { lte: new Date() },
-          endDate: { gte: new Date() },
-          employee: filter
-        } 
-      });
-    } catch (e) { console.error("onLeave count failed", e); }
-
-    try {
-      const now = new Date();
-      const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      newJoiners = await prisma.employee.count({ 
-        where: { ...filter, joiningDate: { gte: firstDayOfMonth } } 
-      });
-    } catch (e) { console.error("newJoiners count failed", e); }
-
-    try {
-      const now = new Date();
-      const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
-      onProbation = await prisma.employee.count({
-        where: { ...filter, joiningDate: { gte: sixMonthsAgo } }
-      });
-    } catch (e) { console.error("onProbation count failed", e); }
-
-    res.status(200).json(new ApiResponse(true, 'Dashboard summary fetched', {
-      total,
-      active,
-      inactive,
-      onLeave,
-      newJoiners,
-      onProbation
-    }));
+    const summary = await EmployeeService.getDashboardSummary(filter);
+    res.status(200).json(new ApiResponse(true, 'Dashboard summary fetched', summary));
   } catch (error: any) {
-    console.error("Dashboard error:", error);
     res.status(500).json(new ApiResponse(false, error.message));
   }
 };
@@ -318,48 +276,8 @@ export const getAnalytics = async (req: AuthRequest, res: Response) => {
   try {
     const filter = {};
 
-    const deptDist = await prisma.employee.groupBy({
-      by: ['departmentId'],
-      _count: { id: true },
-      where: filter
-    });
-
-    // Populate department names
-    const departments = await prisma.department.findMany({ select: { id: true, name: true } });
-    const deptMap = departments.reduce((acc: any, d) => ({ ...acc, [d.id]: d.name }), {});
-
-    const departmentDistribution = deptDist.map(d => ({
-      name: d.departmentId ? deptMap[d.departmentId] : 'Unassigned',
-      value: d._count.id
-    }));
-
-    const genderDist = await prisma.employee.groupBy({
-      by: ['gender'],
-      _count: { id: true },
-      where: filter
-    });
-
-    const genderDistribution = genderDist.map(d => ({
-      name: d.gender || 'Unknown',
-      value: d._count.id
-    }));
-
-    const typeDist = await prisma.employee.groupBy({
-      by: ['employmentType'],
-      _count: { id: true },
-      where: filter
-    });
-
-    const employmentTypeDistribution = typeDist.map(d => ({
-      name: d.employmentType || 'Unknown',
-      value: d._count.id
-    }));
-
-    res.status(200).json(new ApiResponse(true, 'Analytics fetched', {
-      departmentDistribution,
-      genderDistribution,
-      employmentTypeDistribution
-    }));
+    const analytics = await EmployeeService.getAnalytics(filter);
+    res.status(200).json(new ApiResponse(true, 'Analytics fetched', analytics));
   } catch (error: any) {
     res.status(500).json(new ApiResponse(false, error.message));
   }
@@ -368,27 +286,10 @@ export const getAnalytics = async (req: AuthRequest, res: Response) => {
 export const getEmployeeDetails = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const employee = await prisma.employee.findUnique({
-      where: { id },
-      include: {
-        department: true,
-        designation: true,
-        manager: { select: { firstName: true, lastName: true } },
-        leaveBalance: true,
-        documents: true,
-        attendanceRecords: { take: 10, orderBy: { date: 'desc' } }
-      }
-    });
-
-    if (!employee) return res.status(404).json(new ApiResponse(false, 'Not found'));
-    
-    if (employee.accountNumber) {
-      try { employee.accountNumber = decrypt(employee.accountNumber); } catch (e) {}
-    }
-
+    const employee = await EmployeeService.getEmployeeDetails(id);
     res.status(200).json(new ApiResponse(true, 'Employee details fetched', employee));
   } catch (error: any) {
-    res.status(500).json(new ApiResponse(false, error.message));
+    res.status(404).json(new ApiResponse(false, error.message));
   }
 };
 
@@ -400,45 +301,10 @@ export const bulkOperations = async (req: AuthRequest, res: Response) => {
       return res.status(400).json(new ApiResponse(false, 'No employees selected'));
     }
 
-    switch (action) {
-      case 'DELETE':
-        // Caution: Real deletion needs cascade handle. We'll do simple status change instead or use a background job.
-        await prisma.employee.updateMany({
-          where: { id: { in: employeeIds } },
-          data: { status: 'TERMINATED' } // Soft delete alternative
-        });
-        break;
-      case 'ACTIVATE':
-        await prisma.employee.updateMany({
-          where: { id: { in: employeeIds } },
-          data: { status: 'ACTIVE' }
-        });
-        break;
-      case 'DEACTIVATE':
-        await prisma.employee.updateMany({
-          where: { id: { in: employeeIds } },
-          data: { status: 'INACTIVE' }
-        });
-        break;
-      case 'ASSIGN_DEPARTMENT':
-        await prisma.employee.updateMany({
-          where: { id: { in: employeeIds } },
-          data: { departmentId: data.departmentId }
-        });
-        break;
-      case 'ASSIGN_MANAGER':
-        await prisma.employee.updateMany({
-          where: { id: { in: employeeIds } },
-          data: { managerId: data.managerId }
-        });
-        break;
-      default:
-        return res.status(400).json(new ApiResponse(false, 'Invalid action'));
-    }
-
+    await EmployeeService.bulkOperations(action, employeeIds, data);
     res.status(200).json(new ApiResponse(true, `Bulk ${action} completed successfully`));
   } catch (error: any) {
-    res.status(500).json(new ApiResponse(false, error.message));
+    res.status(400).json(new ApiResponse(false, error.message));
   }
 };
 

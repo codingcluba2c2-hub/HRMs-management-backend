@@ -187,7 +187,7 @@ export const generatePayslipPdf = async (data: PayslipData): Promise<Buffer> => 
           <div class="section-title">Payment Details</div>
           <div class="info-row">
             <span class="info-label">Payment Date:</span>
-            <span class="info-value">${new Date(paymentDate).toLocaleDateString()}</span>
+            <span class="info-value">${new Date(paymentDate).toLocaleString('en-US', { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', hour12: true })}</span>
           </div>
           <div class="info-row">
             <span class="info-label">Working Days:</span>

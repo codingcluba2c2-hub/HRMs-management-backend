@@ -1,10 +1,8 @@
 import { prisma } from '../../lib/prisma';
 import { Request, Response } from 'express';
-
 import { ApiResponse } from '../../utils/ApiResponse';
 
-
-
+// Fetches all attendance correction requests from the database (e.g. for HR to review)
 export const getAll = async (req: Request, res: Response) => {
   try {
     const data = await prisma.attendanceCorrection.findMany();
@@ -14,6 +12,7 @@ export const getAll = async (req: Request, res: Response) => {
   }
 };
 
+// Submits a new attendance correction request (e.g. employee forgot to punch out)
 export const create = async (req: Request, res: Response) => {
   try {
     const data = await prisma.attendanceCorrection.create({ data: req.body });

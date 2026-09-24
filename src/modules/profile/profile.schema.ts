@@ -1,8 +1,9 @@
 import { z } from 'zod';
+import { emailValidation, nameValidation, phoneValidation, passwordValidation, addressValidation, pincodeValidation } from '../../validations/common.schema';
 
 export const updatePersonalSchema = z.object({
-  firstName: z.string().min(2),
-  lastName: z.string().min(2),
+  firstName: nameValidation,
+  lastName: nameValidation,
   gender: z.string().optional(),
   dob: z.string().optional().nullable(),
   bloodGroup: z.string().optional().nullable(),
@@ -11,25 +12,25 @@ export const updatePersonalSchema = z.object({
 });
 
 export const updateContactSchema = z.object({
-  phone: z.string().optional().nullable(),
-  alternatePhone: z.string().optional().nullable(),
-  emergencyEmail: z.string().email().optional().nullable(),
-  address: z.string().optional().nullable(),
+  phone: phoneValidation.optional().nullable(),
+  alternatePhone: phoneValidation.optional().nullable(),
+  emergencyEmail: emailValidation.optional().nullable(),
+  address: addressValidation.optional().nullable(),
   city: z.string().optional().nullable(),
   state: z.string().optional().nullable(),
   country: z.string().optional().nullable(),
-  postalCode: z.string().optional().nullable(),
-  emergencyContactName: z.string().optional().nullable(),
+  postalCode: pincodeValidation.optional().nullable(),
+  emergencyContactName: nameValidation.optional().nullable(),
   emergencyContactRelation: z.string().optional().nullable(),
-  emergencyContactPhone: z.string().optional().nullable(),
-  emergencyContactAddress: z.string().optional().nullable(),
+  emergencyContactPhone: phoneValidation.optional().nullable(),
+  emergencyContactAddress: addressValidation.optional().nullable(),
 });
 
 export const updateBankSchema = z.object({
   bankName: z.string().optional().nullable(),
-  accountNumber: z.string().optional().nullable(),
-  ifsc: z.string().optional().nullable(),
-  upiId: z.string().optional().nullable(),
+  accountNumber: z.string().regex(/^\d{9,18}$/, 'Invalid Account Number').optional().nullable(),
+  ifsc: z.string().regex(/^[A-Z]{4}0[A-Z0-9]{6}$/, 'Invalid IFSC Code').optional().nullable(),
+  upiId: z.string().regex(/^[\w.-]+@[\w.-]+$/, 'Invalid UPI ID').optional().nullable(),
 });
 
 export const updateSkillsSchema = z.object({
@@ -56,5 +57,5 @@ export const updatePreferencesSchema = z.object({
 
 export const updateSecuritySchema = z.object({
   currentPassword: z.string(),
-  newPassword: z.string().min(6),
+  newPassword: passwordValidation,
 });

@@ -168,3 +168,21 @@ export const getLeaveCalendar = async (req: AuthRequest, res: Response) => {
     return res.status(500).json(new ApiResponse(false, error.message || "Failed to fetch calendar"));
   }
 };
+
+export const getLeaveQuotas = async (req: AuthRequest, res: Response) => {
+  try {
+    const quotas = await leaveService.getLeaveQuotas();
+    return res.status(200).json(new ApiResponse(true, "Quotas fetched", quotas));
+  } catch (error: any) {
+    return res.status(500).json(new ApiResponse(false, error.message || "Failed to fetch quotas"));
+  }
+};
+
+export const updateLeaveQuotas = async (req: AuthRequest, res: Response) => {
+  try {
+    const quotas = await leaveService.updateLeaveQuotas(req.body);
+    return res.status(200).json(new ApiResponse(true, "Quotas updated", quotas));
+  } catch (error: any) {
+    return res.status(500).json(new ApiResponse(false, error.message || "Failed to update quotas"));
+  }
+};

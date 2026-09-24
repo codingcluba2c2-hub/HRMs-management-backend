@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { loginHandler, forgotPasswordHandler, registerHandler, verifyOtpHandler, resetPasswordHandler, refreshHandler, googleLoginHandler, sendLoginOtpHandler, verifyLoginOtpHandler } from './auth.controller';
 import rateLimit from 'express-rate-limit';
-
+import { validateRequest } from '../../middlewares/validateRequest';
+import { loginSchema, forgotPasswordSchema, verifyOtpSchema, resetPasswordSchema, registerSchema } from './auth.schema';
 const router = Router();
 
 const loginLimiter = rateLimit({
@@ -12,7 +13,7 @@ const loginLimiter = rateLimit({
 
 const otpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
+  max: 50,
   message: { success: false, message: 'Too many OTP requests from this IP, please try again after 15 minutes' }
 });
 
@@ -56,7 +57,7 @@ const otpLimiter = rateLimit({
  *       401:
  *         description: Invalid credentials
  */
-router.post('/login', loginLimiter, loginHandler);
+router.post('/login', loginLimiter, validateRequest({ body: loginSchema }), loginHandler);
 
 /**
  * @swagger
@@ -114,7 +115,7 @@ router.post('/google-login', loginLimiter, googleLoginHandler);
  *       404:
  *         $ref: '#/components/responses/NotFoundError'
  */
-router.post('/send-login-otp', otpLimiter, sendLoginOtpHandler);
+router.post('/send-login-otp', otpLimiter, validateRequest({ body: forgotPasswordSchema }), sendLoginOtpHandler);
 
 /**
  * @swagger
@@ -148,7 +149,7 @@ router.post('/send-login-otp', otpLimiter, sendLoginOtpHandler);
  *       401:
  *         description: Invalid OTP
  */
-router.post('/verify-login-otp', loginLimiter, verifyLoginOtpHandler);
+router.post('/verify-login-otp', loginLimiter, validateRequest({ body: verifyOtpSchema }), verifyLoginOtpHandler);
 
 /**
  * @swagger
@@ -176,7 +177,7 @@ router.post('/verify-login-otp', loginLimiter, verifyLoginOtpHandler);
  *       404:
  *         $ref: '#/components/responses/NotFoundError'
  */
-router.post('/forgot-password', otpLimiter, forgotPasswordHandler);
+router.post('/forgot-password', otpLimiter, validateRequest({ body: forgotPasswordSchema }), forgotPasswordHandler);
 
 /**
  * @swagger
@@ -208,7 +209,7 @@ router.post('/forgot-password', otpLimiter, forgotPasswordHandler);
  *       400:
  *         description: Invalid or expired OTP
  */
-router.post('/verify-otp', verifyOtpHandler);
+router.post('/verify-otp', validateRequest({ body: verifyOtpSchema }), verifyOtpHandler);
 
 /**
  * @swagger
@@ -241,7 +242,7 @@ router.post('/verify-otp', verifyOtpHandler);
  *       400:
  *         description: Bad request
  */
-router.post('/reset-password', resetPasswordHandler);
+router.post('/reset-password', validateRequest({ body: resetPasswordSchema }), resetPasswordHandler);
 
 /**
  * @swagger
@@ -278,7 +279,7 @@ router.post('/reset-password', resetPasswordHandler);
  *       400:
  *         description: Validation error or user already exists
  */
-router.post('/register', registerHandler);
+router.post('/register', validateRequest({ body: registerSchema }), registerHandler);
 
 /**
  * @swagger

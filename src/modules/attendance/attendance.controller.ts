@@ -113,6 +113,8 @@ export const getStatus = async (req: Request, res: Response) => {
       }));
     }
 
+    shift = record.shift;
+
     // Determine current live state
     const openLog = record.logs.find((l: any) => !l.punchOut);
     
@@ -207,6 +209,11 @@ export const getStatus = async (req: Request, res: Response) => {
     } else if (record.logs.length > 0) {
       canResume = totalEffectiveMinutes < REQUIRED_WORKING_MINUTES;
       currentState = canResume ? "PUNCHED_OUT" : "COMPLETED";
+    }
+
+    let currentState = "NOT_PUNCHED_IN";
+    if (hasLogs) {
+      currentState = openBreak ? "ON_BREAK" : (openLog ? "PUNCHED_IN" : "PUNCHED_OUT");
     }
 
     return res.status(200).json(new ApiResponse(true, "Success", {
@@ -414,6 +421,9 @@ export const punchOut = async (req: Request, res: Response) => {
         breakMs += (sec * 1000);
       }
     });
+    
+    let effectiveMs = grossMs - breakMs;
+    if (effectiveMs < 0) effectiveMs = 0;
 
     const effectiveMs = Math.max(0, grossMs - breakMs);
     const totalEffectiveSeconds = Math.floor(effectiveMs / 1000);
@@ -772,7 +782,6 @@ export const updateManual = async (req: Request, res: Response) => {
     const record = await prisma.attendanceRecord.update({
       where: { id },
       data: {
-        date: date ? new Date(date) : undefined,
         status,
         shiftId: shiftId || undefined,
         grossHours: punchIn && punchOut ? (new Date(punchOut).getTime() - new Date(punchIn).getTime()) / 3600000 : 0,
@@ -825,10 +834,9 @@ export const getMySummary = async (req: Request, res: Response) => {
     if (!employee) return res.status(404).json(new ApiResponse(false, "Employee profile not found"));
 
     const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     
     const records = await prisma.attendanceRecord.findMany({
-      where: { employeeId: employee.id, date: { gte: startOfMonth } }
+      where: { employeeId: employee.id }
     });
 
     let presentDays = 0;

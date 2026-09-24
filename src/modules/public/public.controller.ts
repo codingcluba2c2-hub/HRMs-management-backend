@@ -34,38 +34,32 @@ export const getLoginContentHandler = async (req: Request, res: Response, next: 
       {
         id: "1",
         title: "Manage Employees",
-        description: "Manage complete employee lifecycle.",
+        description: "Streamline your entire employee lifecycle from onboarding to offboarding with our comprehensive suite of HR tools and real-time analytics.",
         icon: "Users"
       },
       {
         id: "2",
         title: "Track Attendance",
-        description: "Real time attendance monitoring.",
+        description: "Real-time attendance monitoring with geo-fencing, biometric integrations, and seamless leave management capabilities.",
         icon: "CalendarCheck"
       },
       {
         id: "3",
         title: "Automate Payroll",
-        description: "Generate payroll in minutes.",
+        description: "Generate error-free payroll in minutes with automated tax compliance, deductions, and direct bank transfer integrations.",
         icon: "CircleDollarSign"
       },
       {
         id: "4",
         title: "Monitor Performance",
-        description: "Track KPIs and employee goals.",
+        description: "Track key performance indicators, set employee goals, and conduct continuous 360-degree performance reviews effortlessly.",
         icon: "TrendingUp"
       },
       {
         id: "5",
         title: "Internal Announcements",
-        description: "Communicate with your workforce.",
+        description: "Communicate effectively with your entire workforce using targeted announcements, policies, and interactive company boards.",
         icon: "Megaphone"
-      },
-      {
-        id: "6",
-        title: "AI HR Assistant",
-        description: "AI powered HR support.",
-        icon: "Bot"
       }
     ]);
 

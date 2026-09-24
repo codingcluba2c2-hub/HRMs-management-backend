@@ -18,6 +18,8 @@ import {
   getLeaveLedgerLogs
 } from './leave.controller';
 import { authenticate } from '../../middlewares/authMiddleware';
+import { validateRequest } from '../../middlewares/validateRequest';
+import { createLeaveRequestSchema, updateLeaveStatusSchema } from './leave.schema';
 
 const router = Router();
 
@@ -45,7 +47,7 @@ router.put('/balances/:employeeId', updateEmployeeBalance);
 
 // Employee Self-Service
 router.get('/my', getMyLeaves);
-router.post('/my', createLeaveRequest);
+router.post('/my', validateRequest({ body: createLeaveRequestSchema }), createLeaveRequest);
 
 // Requests & Approval
 router.get('/', getLeaveRequests);

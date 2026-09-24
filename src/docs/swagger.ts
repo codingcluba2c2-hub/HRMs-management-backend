@@ -1,8 +1,11 @@
 import swaggerJsdoc from 'swagger-jsdoc';
 
+// Configuration settings for our automatic API Documentation (Swagger)
 const options: swaggerJsdoc.Options = {
   definition: {
+    // We are using OpenAPI version 3
     openapi: '3.0.0',
+    // Basic information about the API shown at the top of the documentation page
     info: {
       title: 'HRMS API Documentation',
       version: '1.0.0',
@@ -11,6 +14,7 @@ const options: swaggerJsdoc.Options = {
         name: 'Developer Team',
       },
     },
+    // The servers where this API is hosted
     servers: [
       {
         url: 'http://localhost:6002',
@@ -25,7 +29,9 @@ const options: swaggerJsdoc.Options = {
         description: 'Production Server',
       },
     ],
+    // Reusable components across all our API endpoints
     components: {
+      // Setup the "Authorize" button so developers can test APIs with a token
       securitySchemes: {
         bearerAuth: {
           type: 'http',
@@ -34,6 +40,7 @@ const options: swaggerJsdoc.Options = {
           description: 'Enter your JWT token.',
         },
       },
+      // Standard reusable error responses
       responses: {
         UnauthorizedError: {
           description: 'Access token is missing or invalid',
@@ -79,13 +86,16 @@ const options: swaggerJsdoc.Options = {
         },
       },
     },
+    // Apply the Bearer Token security globally to all routes by default
     security: [
       {
         bearerAuth: [],
       },
     ],
   },
+  // Automatically search these route files for swagger comment blocks to generate the docs
   apis: ['./src/modules/**/*.route.ts'],
 };
 
+// Generate and export the final swagger specification object
 export const swaggerSpec = swaggerJsdoc(options);

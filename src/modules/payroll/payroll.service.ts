@@ -1,5 +1,123 @@
 import { prisma } from '../../lib/prisma';
 import { Payroll, PayrollQuery } from '@prisma/client';
+import { decrypt } from '../../utils/encryption';
+import { generatePayslipPdf } from '../../utils/pdfGenerator';
+import { sendPayrollEmail } from '../../utils/mailer';
+
+export const createPayrollRecord = async (data: any) => {
+  const employee = await prisma.employee.findUnique({ where: { id: data.employeeId } });
+  if (!employee) throw new Error("Employee not found");
+
+  // Calculate fields
+  const grossSalary = data.basicSalary + (data.bonus || 0);
+  const netSalary = grossSalary - (data.deductions || 0);
+  
+  // Tax logic (simplified)
+  const incomeTax = data.deductions > 0 ? data.deductions * 0.5 : 0; // arbitrary split for display
+  const providentFund = data.deductions > 0 ? data.deductions * 0.5 : 0;
+
+  let parsedPaymentDate = new Date(data.paymentDate);
+  if (typeof data.paymentDate === 'string' && data.paymentDate.length === 10) {
+    const now = new Date();
+    if (data.paymentDate === now.toISOString().split('T')[0]) {
+      parsedPaymentDate = now;
+    } else {
+      parsedPaymentDate = new Date(`${data.paymentDate}T${now.toISOString().split('T')[1]}`);
+    }
+  }
+
+  // Save to DB
+  const payrollRecord = await prisma.payroll.upsert({
+    where: {
+      employeeId_month_year: {
+        employeeId: employee.id,
+        month: data.month,
+        year: data.year
+      }
+    },
+    update: {
+      basicSalary: data.basicSalary,
+      bonus: data.bonus || 0,
+      deductions: data.deductions || 0,
+      grossSalary,
+      netSalary,
+      incomeTax,
+      providentFund,
+      workingDays: data.workingDays,
+      paidDays: data.workingDays,
+      status: data.status,
+      paymentDate: parsedPaymentDate
+    },
+    create: {
+      employeeId: employee.id,
+      month: data.month,
+      year: data.year,
+      basicSalary: data.basicSalary,
+      bonus: data.bonus || 0,
+      deductions: data.deductions || 0,
+      grossSalary,
+      netSalary,
+      incomeTax,
+      providentFund,
+      workingDays: data.workingDays,
+      paidDays: data.workingDays, // simplified
+      status: data.status,
+      paymentDate: parsedPaymentDate
+    }
+  });
+
+  // Generate PDF Payslip
+  try {
+    const pdfBuffer = await generatePayslipPdf({
+      companyName: "Enterprise HRMS",
+      companyAddress: "123 Tech Park, Innovation Valley",
+      companyWebsite: "www.enterprise-hrms.com",
+      companyPhone: "+1 800 555 0199",
+      month: data.month,
+      year: data.year,
+      employeeName: `${employee.firstName} ${employee.lastName}`,
+      employeeId: employee.employeeId,
+      employeeEmail: employee.email,
+      paymentDate: new Date(data.paymentDate),
+      workingDays: data.workingDays,
+      transactionId: data.transactionId || `TXN-${Date.now()}`,
+      bankName: data.bankName || employee.bankName || "N/A",
+      accountNumber: data.accountNumber || (employee.accountNumber ? decrypt(employee.accountNumber) : "N/A"),
+      basicSalary: data.basicSalary,
+      bonus: data.bonus || 0,
+      deductions: data.deductions || 0,
+      netSalary
+    });
+
+    // Send Email
+    await sendPayrollEmail(
+      employee.email, 
+      `${employee.firstName} ${employee.lastName}`, 
+      data.month, 
+      data.year, 
+      netSalary,
+      data.bankName || employee.bankName || "N/A",
+      "XXXX" + (data.accountNumber || (employee.accountNumber ? decrypt(employee.accountNumber) : "")).slice(-4),
+      pdfBuffer
+    );
+  } catch (error) {
+    console.error("Failed to generate PDF or send email:", error);
+    // Even if email fails, record is created, but we might want to log it
+  }
+
+  return payrollRecord;
+};
+
+export const bulkCreatePayrollRecords = async (records: any[]) => {
+  const results = await Promise.allSettled(records.map(record => createPayrollRecord(record)));
+  
+  const successful = results.filter(r => r.status === 'fulfilled').map((r: any) => r.value);
+  const failed = results.filter(r => r.status === 'rejected').map((r: any) => ({
+    reason: r.reason?.message || "Unknown error"
+  }));
+
+  return { successful, failed };
+};
 
 export const getPayrollSummary = async (userId: string, role: string) => {
   if (role === 'EMPLOYEE') {
@@ -52,16 +170,20 @@ export const getPayrollSummary = async (userId: string, role: string) => {
     });
 
     const totalPaid = currentYearPayslips.reduce((acc: number, curr: any) => acc + curr.netSalary, 0);
+    const totalGross = currentYearPayslips.reduce((acc: number, curr: any) => acc + curr.grossSalary, 0);
     const totalTax = currentYearPayslips.reduce((acc: number, curr: any) => acc + curr.incomeTax, 0);
     const totalBonus = currentYearPayslips.reduce((acc: number, curr: any) => acc + curr.bonus, 0);
     const totalDeductions = currentYearPayslips.reduce((acc: number, curr: any) => acc + curr.deductions, 0);
+    const totalPF = currentYearPayslips.reduce((acc: number, curr: any) => acc + curr.providentFund, 0);
 
     return {
       metrics: [
-        { title: "Total Salary Paid (YTD)", value: `₹${totalPaid.toLocaleString()}`, subtitle: "Net Pay", trend: "Global", icon: "Wallet" },
+        { title: "Total Salary Paid", value: `₹${totalPaid.toLocaleString()}`, subtitle: "Net Pay", trend: "Global", icon: "Wallet" },
+        { title: "Total Gross Salary", value: `₹${totalGross.toLocaleString()}`, subtitle: "Gross Pay", trend: "Global", icon: "Banknote" },
         { title: "Total Tax Collected", value: `₹${totalTax.toLocaleString()}`, subtitle: "YTD", trend: "Tax", icon: "Receipt" },
         { title: "Total Bonus Paid", value: `₹${totalBonus.toLocaleString()}`, subtitle: "YTD", trend: "Rewards", icon: "Award" },
-        { title: "Total Deductions", value: `₹${totalDeductions.toLocaleString()}`, subtitle: "YTD", trend: "Global", icon: "TrendingDown" }
+        { title: "Total Deductions", value: `₹${totalDeductions.toLocaleString()}`, subtitle: "YTD", trend: "Global", icon: "TrendingDown" },
+        { title: "Total PF Contributions", value: `₹${totalPF.toLocaleString()}`, subtitle: "YTD", trend: "Deductions", icon: "ShieldCheck" }
       ],
       insights: [
         { id: '1', type: 'INFO', message: `Global payroll processed successfully this month.` },

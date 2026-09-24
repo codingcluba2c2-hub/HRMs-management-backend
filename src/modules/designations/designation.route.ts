@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { createDesignation, getDesignations, updateDesignation, deleteDesignation } from './designation.controller';
 import { authenticate } from '../../middlewares/authMiddleware';
+import { validateRequest } from '../../middlewares/validateRequest';
+import { createDesignationSchema, updateDesignationSchema } from './designation.schema';
 
 const router = Router();
 
@@ -57,7 +59,7 @@ router.use(authenticate); // All routes require authentication
  *         $ref: '#/components/responses/UnauthorizedError'
  */
 router.route('/')
-  .post(createDesignation)
+  .post(validateRequest({ body: createDesignationSchema }), createDesignation)
   .get(getDesignations);
 
 /**
@@ -118,7 +120,7 @@ router.route('/')
  *         $ref: '#/components/responses/NotFoundError'
  */
 router.route('/:id')
-  .put(updateDesignation)
+  .put(validateRequest({ body: updateDesignationSchema }), updateDesignation)
   .delete(deleteDesignation);
 
 export default router;

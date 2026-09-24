@@ -3,6 +3,7 @@ import { Response } from 'express';
 import { ApiResponse } from '../../utils/ApiResponse';
 import { AuthRequest } from '../../middlewares/authMiddleware';
 import ImageKit from 'imagekit';
+import { decrypt, encrypt } from '../../utils/encryption';
 
 const imagekit = new ImageKit({
   publicKey: process.env.IMAGEKIT_PUBLIC_KEY!,
@@ -169,6 +170,14 @@ export const getFullProfile = async (req: AuthRequest, res: Response) => {
     }
 
     const { passwordHash: _, ...sanitized } = user;
+
+    if (sanitized.employee && sanitized.employee.accountNumber) {
+      try {
+        sanitized.employee.accountNumber = decrypt(sanitized.employee.accountNumber);
+      } catch (e) {
+        console.error("Failed to decrypt account number for user", userEmail);
+      }
+    }
     
     return res.status(200).json(new ApiResponse(true, "Full profile fetched", sanitized));
   } catch (error: any) {
@@ -266,7 +275,7 @@ export const updateBank = async (req: AuthRequest, res: Response) => {
       where: { id: user.employee.id },
       data: {
         bankName: data.bankName,
-        accountNumber: data.accountNumber,
+        accountNumber: data.accountNumber ? encrypt(data.accountNumber) : undefined,
         ifsc: data.ifsc,
         upiId: data.upiId,
       }

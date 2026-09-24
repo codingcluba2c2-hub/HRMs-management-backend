@@ -22,3 +22,16 @@ export const create = async (req: Request, res: Response) => {
     return res.status(500).json(new ApiResponse(false, error.message));
   }
 };
+
+export const update = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const data = await prisma.shift.update({
+      where: { id },
+      data: req.body
+    });
+    return res.status(200).json(new ApiResponse(true, "Updated successfully", data));
+  } catch (error: any) {
+    return res.status(500).json(new ApiResponse(false, error.message));
+  }
+};

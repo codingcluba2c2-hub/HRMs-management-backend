@@ -1,12 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../../lib/prisma';
-import { loginSchema, forgotPasswordSchema, registerSchema, verifyOtpSchema, resetPasswordSchema } from './auth.schema';
+
 import * as authService from './auth.service';
 import { ApiResponse } from '../../utils/ApiResponse';
 
+// Handles standard Email & Password login, generates JWT and sets HTTP-only cookie
 export const loginHandler = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const data = loginSchema.parse(req.body);
+    const data = req.body;
     const result = await authService.login(data.email, data.password);
     await prisma.auditLog.create({
       data: {
@@ -35,6 +36,7 @@ export const loginHandler = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
+// Handles SSO login via Google OAuth token
 export const googleLoginHandler = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { token } = req.body;
@@ -67,9 +69,10 @@ export const googleLoginHandler = async (req: Request, res: Response, next: Next
   }
 };
 
+// Generates a 6-digit OTP and emails it to the user for secure passwordless login
 export const sendLoginOtpHandler = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const data = forgotPasswordSchema.parse(req.body);
+    const data = req.body;
     await authService.requestLoginOtp(data.email);
     res.status(200).json(new ApiResponse(true, 'Login OTP sent to your email'));
   } catch (error: any) {
@@ -83,7 +86,7 @@ export const sendLoginOtpHandler = async (req: Request, res: Response, next: Nex
 
 export const verifyLoginOtpHandler = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const data = verifyOtpSchema.parse(req.body);
+    const data = req.body;
     const result = await authService.verifyLoginOtp(data.email, data.otp);
     await prisma.auditLog.create({
       data: {
@@ -114,17 +117,21 @@ export const verifyLoginOtpHandler = async (req: Request, res: Response, next: N
 
 export const forgotPasswordHandler = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const data = forgotPasswordSchema.parse(req.body);
+    const data = req.body;
     await authService.requestPasswordReset(data.email);
-    res.status(200).json(new ApiResponse(true, 'If an account exists, a reset link has been sent'));
+    res.status(200).json(new ApiResponse(true, 'OTP sent to your email successfully'));
   } catch (error: any) {
-    next(error);
+    if (error.message === 'Account not found') {
+      res.status(404).json(new ApiResponse(false, error.message));
+    } else {
+      next(error);
+    }
   }
 };
 
 export const verifyOtpHandler = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const data = verifyOtpSchema.parse(req.body);
+    const data = req.body;
     await authService.verifyOTP(data.email, data.otp);
     res.status(200).json(new ApiResponse(true, 'OTP verified successfully'));
   } catch (error: any) {
@@ -138,7 +145,7 @@ export const verifyOtpHandler = async (req: Request, res: Response, next: NextFu
 
 export const resetPasswordHandler = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const data = resetPasswordSchema.parse(req.body);
+    const data = req.body;
     await authService.resetPassword(data.email, data.password);
     res.status(200).json(new ApiResponse(true, 'Password reset successful'));
   } catch (error: any) {
@@ -152,7 +159,7 @@ export const resetPasswordHandler = async (req: Request, res: Response, next: Ne
 
 export const registerHandler = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const data = registerSchema.parse(req.body);
+    const data = req.body;
     const result = await authService.register(data);
     res.status(201).json(new ApiResponse(true, 'Registration successful', result));
   } catch (error: any) {
@@ -188,7 +195,7 @@ export const refreshHandler = async (req: Request, res: Response, next: NextFunc
     const newToken = jwt.sign(
       { id: user.id, email: user.email, role: roleName },
       process.env.JWT_SECRET as string,
-      { expiresIn: '15m' }
+      { expiresIn: '7d' }
     );
     
     res.status(200).json(new ApiResponse(true, 'Token refreshed', { token: newToken }));

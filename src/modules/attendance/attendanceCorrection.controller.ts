@@ -80,16 +80,32 @@ export const getMyCorrections = async (req: Request, res: Response) => {
   }
 };
 
-// Get pending requests for manager
+// Get pending requests for manager or HR Admin
 export const getPendingCorrections = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const manager = await prisma.employee.findUnique({ where: { userId } });
-    if (!manager) return res.status(404).json(new ApiResponse(false, "Manager profile not found"));
+    
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { role: true }
+    });
+
+    if (!user) return res.status(404).json(new ApiResponse(false, "User not found"));
+
+    const roleName = user.role?.name || "";
+    const isHrOrAdmin = roleName === "HR_ADMIN" || roleName === "ADMIN" || roleName === "HR Admin";
+
+    const whereClause: any = { status: "PENDING" };
+    
+    if (!isHrOrAdmin) {
+      const employee = await prisma.employee.findUnique({ where: { userId } });
+      if (!employee) return res.status(403).json(new ApiResponse(false, "Not authorized as a manager"));
+      whereClause.managerId = employee.id;
+    }
 
     const corrections = await prisma.attendanceCorrection.findMany({
-      where: { managerId: manager.id, status: "PENDING" },
-      include: { employee: true },
+      where: whereClause,
+      include: { employee: { include: { user: { select: { profilePic: true } } } } },
       orderBy: { createdAt: 'desc' }
     });
 
@@ -131,6 +147,7 @@ export const approveCorrection = async (req: Request, res: Response) => {
     });
 
     // Update the actual Attendance Record & Logs
+    let finalRecordId = correction.attendanceRecordId;
     if (correction.requestedCheckIn || correction.requestedCheckOut) {
       if (correction.attendanceRecordId) {
         // If record exists, update the first log
@@ -157,6 +174,8 @@ export const approveCorrection = async (req: Request, res: Response) => {
             status: "PRESENT",
           }
         });
+        
+        finalRecordId = newRecord.id;
 
         if (correction.requestedCheckIn) {
           await prisma.attendanceLog.create({
@@ -167,6 +186,30 @@ export const approveCorrection = async (req: Request, res: Response) => {
             }
           });
         }
+      }
+
+      if (finalRecordId) {
+        // Recalculate hours
+        const allLogs = await prisma.attendanceLog.findMany({ where: { attendanceId: finalRecordId } });
+        const allBreaks = await prisma.breakSession.findMany({ where: { attendanceId: finalRecordId } });
+
+        let grossMs = 0;
+        allLogs.forEach(l => {
+          if (l.punchOut) grossMs += (l.punchOut.getTime() - l.punchIn.getTime());
+        });
+
+        let breakMs = 0;
+        allBreaks.forEach(b => {
+          if (b.breakEnd) breakMs += (b.breakEnd.getTime() - b.breakStart.getTime());
+        });
+
+        const grossHours = grossMs / (1000 * 60 * 60);
+        const effectiveHours = (grossMs - breakMs) / (1000 * 60 * 60);
+
+        await prisma.attendanceRecord.update({
+          where: { id: finalRecordId },
+          data: { grossHours, effectiveHours }
+        });
       }
     }
 

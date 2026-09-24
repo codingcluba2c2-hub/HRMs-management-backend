@@ -4,7 +4,9 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
+import compression from 'compression';
 import authRoutes from './modules/auth/auth.route';
+import orgSetupRoutes from './modules/org-setup/orgSetup.route';
 import departmentRoutes from './modules/departments/department.route';
 import designationRoutes from './modules/designations/designation.route';
 import employeeRoutes from './modules/employees/employee.route';
@@ -19,6 +21,7 @@ import documentRoutes from './modules/documents/document.route';
 import adminRoutes from './modules/admin/admin.route';
 import profileRoutes from './modules/profile/profile.route';
 import dashboardRoutes from './modules/dashboard/dashboard.route';
+import redis from './lib/redis';
 import companyRoutes from './modules/company/company.route';
 import announcementRoutes from './modules/announcements/announcement.route';
 import publicRoutes from './modules/public/public.route';
@@ -42,16 +45,52 @@ const limiter = rateLimit({
   message: 'Too many requests from this IP, please try again later.',
 });
 
+// Auth-Specific Rate Limiting
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Limit each IP to 5 requests per windowMs
+  message: 'Too many login attempts from this IP, please try again after 15 minutes.',
+});
+
 // Middleware
+const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'];
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
 }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(cookieParser());
-app.use(helmet());
+app.use(compression());
+
+// Health & Readiness Endpoints
+app.get('/healthz', (req, res) => res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() }));
+app.get('/readyz', async (req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    if (redis.status !== 'ready' && redis.status !== 'connecting') {
+      return res.status(503).json({ status: 'unready', reason: 'Redis not ready' });
+    }
+    res.status(200).json({ status: 'ready', database: 'connected', redis: redis.status });
+  } catch (error) {
+    res.status(503).json({ status: 'unready', reason: 'Database offline' });
+  }
+});
+
+app.use(helmet({
+  contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
+  crossOriginEmbedderPolicy: false,
+}));
 app.use(morgan('dev'));
 app.use('/api', limiter);
+app.use('/api/auth/login', authLimiter); // Protect login route
 
 // Basic Route
 app.get('/', (req: Request, res: Response) => {
@@ -61,6 +100,7 @@ app.get('/', (req: Request, res: Response) => {
 // Setup specialized routes
 app.use('/api/public', publicRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/org-setup', orgSetupRoutes);
 app.use('/api/designations', designationRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/employees', employeeRoutes);
@@ -121,6 +161,7 @@ const startServer = async () => {
 };
 
 startServer();
+
 
 // Graceful Shutdown for Nodemon & typical termination signals
 const gracefulShutdown = async () => {

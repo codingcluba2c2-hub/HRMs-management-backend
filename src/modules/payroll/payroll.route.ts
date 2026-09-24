@@ -11,6 +11,8 @@ import {
   deletePayrollRecord
 } from './payroll.controller';
 import { authenticate } from '../../middlewares/authMiddleware';
+import { validateRequest } from '../../middlewares/validateRequest';
+import { createPayrollQuerySchema, createPayrollSchema } from './payroll.schema';
 
 const router = Router();
 
@@ -30,7 +32,7 @@ router.get('/:id/pdf', downloadPayslipPdf);
 router.get('/:id', getPayslipById);
 
 // Submit queries
-router.post('/query', createPayrollQuery);
+router.post('/query', validateRequest({ body: createPayrollQuerySchema }), createPayrollQuery);
 
 export default router;
 
