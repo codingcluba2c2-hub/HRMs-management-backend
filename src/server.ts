@@ -174,3 +174,5 @@ const gracefulShutdown = async () => {
 process.on('SIGUSR2', gracefulShutdown); // Used by nodemon
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
+
+export default app;
