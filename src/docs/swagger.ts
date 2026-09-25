@@ -97,5 +97,12 @@ const options: swaggerJsdoc.Options = {
   apis: ['./src/modules/**/*.route.ts'],
 };
 
-// Generate and export the final swagger specification object
-export const swaggerSpec = swaggerJsdoc(options);
+let spec: any = { openapi: '3.0.0', info: { title: 'HRMS API Documentation', version: '1.0.0' }, paths: {} };
+try {
+  spec = swaggerJsdoc(options);
+} catch (error) {
+  console.warn('[SWAGGER] Failed to initialize swaggerJsdoc:', error);
+}
+
+export const swaggerSpec = spec;
+
