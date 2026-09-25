@@ -1,5 +1,3 @@
-import puppeteer from 'puppeteer';
-
 interface PayslipData {
   companyName: string;
   companyAddress: string;
@@ -270,6 +268,9 @@ export const generatePayslipPdf = async (data: PayslipData): Promise<Buffer> => 
     </body>
     </html>
   `;
+
+  const puppeteerModule = await import('puppeteer');
+  const puppeteer = puppeteerModule.default || puppeteerModule;
 
   const browser = await puppeteer.launch({ 
     headless: true,
