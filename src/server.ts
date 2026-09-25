@@ -94,7 +94,11 @@ app.use('/api/auth/login', authLimiter); // Protect login route
 
 // Basic Route
 app.get('/', (req: Request, res: Response) => {
-  res.send('HRMS Backend is running');
+  res.status(200).json({ status: 'success', message: 'HRMS Backend is running' });
+});
+
+app.get('/api', (req: Request, res: Response) => {
+  res.status(200).json({ status: 'success', message: 'HRMS Backend API is running' });
 });
 
 // Setup specialized routes
