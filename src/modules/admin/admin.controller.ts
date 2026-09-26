@@ -27,9 +27,40 @@ export const createUser = async (req: Request, res: Response) => {
   try {
     const { firstName, lastName, email, password, roleId, companyName, companyWebsite, companyAddress, companyPhone } = req.body;
     
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json(new ApiResponse(false, "Valid email is required."));
+    }
+    
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json(new ApiResponse(false, "Password is required."));
+    }
+
+    if (!firstName || typeof firstName !== 'string') {
+      return res.status(400).json(new ApiResponse(false, "First name is required."));
+    }
+
+    if (!lastName || typeof lastName !== 'string') {
+      return res.status(400).json(new ApiResponse(false, "Last name is required."));
+    }
+
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
       return res.status(400).json(new ApiResponse(false, "User already exists with this email."));
+    }
+
+    // Resolve target role ID (supports both Role UUID and Role Name)
+    let targetRoleId: string | undefined = undefined;
+    if (roleId && typeof roleId === 'string' && roleId.trim().length > 0) {
+      let roleRecord = await prisma.role.findUnique({ where: { id: roleId } });
+      if (!roleRecord) {
+        roleRecord = await prisma.role.findUnique({ where: { name: roleId } });
+      }
+      if (!roleRecord) {
+        roleRecord = await prisma.role.create({
+          data: { name: roleId, description: `${roleId} Role` }
+        });
+      }
+      targetRoleId = roleRecord.id;
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -40,11 +71,11 @@ export const createUser = async (req: Request, res: Response) => {
         lastName,
         email,
         passwordHash,
-        roleId,
-        companyName,
-        companyWebsite,
-        companyAddress,
-        companyPhone
+        roleId: targetRoleId,
+        companyName: companyName || undefined,
+        companyWebsite: companyWebsite || undefined,
+        companyAddress: companyAddress || undefined,
+        companyPhone: companyPhone || undefined,
       },
       include: { role: true }
     });
@@ -52,25 +83,56 @@ export const createUser = async (req: Request, res: Response) => {
     const { passwordHash: _, ...sanitized } = user;
     return res.status(201).json(new ApiResponse(true, "User created", sanitized));
   } catch (error: any) {
-    return res.status(500).json(new ApiResponse(false, error.message));
+    console.error("Error creating user:", error);
+    return res.status(500).json(new ApiResponse(false, error.message || "Internal server error"));
   }
 };
 
 export const updateUser = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { firstName, lastName, email, roleId, companyName, companyWebsite, companyAddress, companyPhone } = req.body;
+    const { firstName, lastName, email, password, roleId, companyName, companyWebsite, companyAddress, companyPhone } = req.body;
     
+    let targetRoleId: string | undefined = undefined;
+    if (roleId && typeof roleId === 'string' && roleId.trim().length > 0) {
+      let roleRecord = await prisma.role.findUnique({ where: { id: roleId } });
+      if (!roleRecord) {
+        roleRecord = await prisma.role.findUnique({ where: { name: roleId } });
+      }
+      if (!roleRecord) {
+        roleRecord = await prisma.role.create({
+          data: { name: roleId, description: `${roleId} Role` }
+        });
+      }
+      targetRoleId = roleRecord.id;
+    }
+
+    const updateData: any = {
+      firstName,
+      lastName,
+      email,
+      roleId: targetRoleId,
+      companyName,
+      companyWebsite,
+      companyAddress,
+      companyPhone
+    };
+
+    if (password && typeof password === 'string' && password.trim().length > 0) {
+      updateData.passwordHash = await bcrypt.hash(password, 10);
+    }
+
     const user = await prisma.user.update({
       where: { id },
-      data: { firstName, lastName, email, roleId, companyName, companyWebsite, companyAddress, companyPhone },
+      data: updateData,
       include: { role: true }
     });
 
     const { passwordHash: _, ...sanitized } = user;
     return res.status(200).json(new ApiResponse(true, "User updated", sanitized));
   } catch (error: any) {
-    return res.status(500).json(new ApiResponse(false, error.message));
+    console.error("Error updating user:", error);
+    return res.status(500).json(new ApiResponse(false, error.message || "Internal server error"));
   }
 };
 

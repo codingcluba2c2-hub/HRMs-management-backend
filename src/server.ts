@@ -4,6 +4,8 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
+dotenv.config();
+// Server entrypoint reloaded
 import compression from 'compression';
 import authRoutes from './modules/auth/auth.route';
 import orgSetupRoutes from './modules/org-setup/orgSetup.route';
