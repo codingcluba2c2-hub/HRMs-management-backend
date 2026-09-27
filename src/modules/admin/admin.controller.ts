@@ -128,6 +128,16 @@ export const updateUser = async (req: Request, res: Response) => {
       include: { role: true }
     });
 
+    // Also sync to linked Employee record if present
+    await prisma.employee.updateMany({
+      where: { OR: [{ userId: id }, { email: user.email }] },
+      data: {
+        ...(firstName ? { firstName } : {}),
+        ...(lastName ? { lastName } : {}),
+        ...(email ? { email } : {}),
+      }
+    }).catch(() => {});
+
     const { passwordHash: _, ...sanitized } = user;
     return res.status(200).json(new ApiResponse(true, "User updated", sanitized));
   } catch (error: any) {

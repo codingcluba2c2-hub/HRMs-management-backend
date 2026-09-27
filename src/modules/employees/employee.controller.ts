@@ -145,15 +145,43 @@ export const getEmployees = async (req: AuthRequest, res: Response) => {
         }).catch(() => {});
       }
     }
-    let filter: any = {};
+    const getTenantFilter = (req: AuthRequest) => {
+      const rawRole = typeof req.user?.role === 'string' ? req.user.role : (req.user?.role as any)?.name || '';
+      const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+      
+      if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
+        return { isDeleted: false };
+      }
+
+      return {
+        isDeleted: false,
+        createdById: req.user?.id,
+        NOT: [
+          { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
+          { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
+        ]
+      };
+    };
+
+    const tenantFilter = getTenantFilter(req);
+    let filter: any = { ...tenantFilter };
 
     if (search) {
-      filter.OR = [
+      const searchConditions = [
         { firstName: { contains: search as string, mode: 'insensitive' } },
         { lastName: { contains: search as string, mode: 'insensitive' } },
         { employeeId: { contains: search as string, mode: 'insensitive' } },
         { email: { contains: search as string, mode: 'insensitive' } }
       ];
+      if (filter.OR) {
+        filter.AND = [
+          { OR: filter.OR },
+          { OR: searchConditions }
+        ];
+        delete filter.OR;
+      } else {
+        filter.OR = searchConditions;
+      }
     }
     if (department && department !== 'ALL') filter.departmentId = department as string;
     if (designation && designation !== 'ALL') filter.designationId = designation as string;
@@ -169,15 +197,43 @@ export const getEmployees = async (req: AuthRequest, res: Response) => {
         designation: { select: { id: true, name: true } },
         manager: { select: { id: true, firstName: true, lastName: true, employeeId: true } },
         leaveBalance: true,
+        user: { select: { profilePic: true, companyName: true } },
       },
       orderBy: { createdAt: 'desc' }
     });
 
+    // Resolve company name directly from User table records (userId, email, or creator)
+    const allUsers = await prisma.user.findMany({
+      select: { id: true, email: true, companyName: true }
+    });
+
+    const userByEmailMap = new Map();
+    const userByIdMap = new Map();
+
+    allUsers.forEach(u => {
+      if (u.id) userByIdMap.set(u.id, u.companyName);
+      if (u.email) userByEmailMap.set(u.email.trim().toLowerCase(), u.companyName);
+    });
+
     const decryptedEmployees = employees.map((emp: any) => {
-      if (emp.accountNumber) {
-        try { emp.accountNumber = decrypt(emp.accountNumber); } catch (e) {}
+      let accountNumber = emp.accountNumber;
+      if (accountNumber) {
+        try { accountNumber = decrypt(accountNumber); } catch (e) {}
       }
-      return emp;
+
+      const empEmail = emp.email ? emp.email.trim().toLowerCase() : '';
+
+      const userByUserId = emp.userId ? userByIdMap.get(emp.userId) : null;
+      const userByEmail = empEmail ? userByEmailMap.get(empEmail) : null;
+      const userByCreator = emp.createdById ? userByIdMap.get(emp.createdById) : null;
+
+      const resolvedCompany = userByUserId || userByEmail || userByCreator || emp.user?.companyName || null;
+
+      return {
+        ...emp,
+        accountNumber,
+        companyName: resolvedCompany
+      };
     });
 
     res.status(200).json(new ApiResponse(true, 'Employees fetched successfully', decryptedEmployees));
@@ -258,14 +314,20 @@ export const deleteEmployee = async (req: Request, res: Response) => {
 
 export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
   try {
-    const filter = {};
-
-    let total = 0, active = 0, inactive = 0, onLeave = 0, newJoiners = 0, onProbation = 0;
-
-    try { total = await prisma.employee.count({ where: filter }); } catch (e) { console.error("total count failed", e); }
-    try { active = await prisma.employee.count({ where: { ...filter, status: 'ACTIVE' } }); } catch (e) { console.error("active count failed", e); }
-    try { inactive = await prisma.employee.count({ where: { ...filter, status: 'INACTIVE' } }); } catch (e) { console.error("inactive count failed", e); }
+    const rawRole = typeof req.user?.role === 'string' ? req.user.role : (req.user?.role as any)?.name || '';
+    const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
     
+    const filter = (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') 
+      ? { isDeleted: false } 
+      : { 
+          isDeleted: false, 
+          createdById: req.user?.id,
+          NOT: [
+            { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
+            { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
+          ]
+        };
+
     const summary = await EmployeeService.getDashboardSummary(filter);
     res.status(200).json(new ApiResponse(true, 'Dashboard summary fetched', summary));
   } catch (error: any) {
@@ -275,7 +337,19 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
 
 export const getAnalytics = async (req: AuthRequest, res: Response) => {
   try {
-    const filter = {};
+    const rawRole = typeof req.user?.role === 'string' ? req.user.role : (req.user?.role as any)?.name || '';
+    const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+
+    const filter = (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') 
+      ? { isDeleted: false } 
+      : { 
+          isDeleted: false, 
+          createdById: req.user?.id,
+          NOT: [
+            { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
+            { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
+          ]
+        };
 
     const analytics = await EmployeeService.getAnalytics(filter);
     res.status(200).json(new ApiResponse(true, 'Analytics fetched', analytics));
