@@ -10,6 +10,6 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/', getCompanyDetails);
-router.put('/', authorizeRoles('Super Admin', 'HR Admin'), validateRequest({ body: updateCompanySchema }), updateCompanyDetails);
+router.put('/', validateRequest({ body: updateCompanySchema }), updateCompanyDetails);
 
 export default router;

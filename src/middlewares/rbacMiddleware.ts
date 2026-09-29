@@ -1,31 +1,45 @@
 import { Response, NextFunction } from 'express';
 import { AuthRequest } from './authMiddleware';
 import redis from '../lib/redis';
+import { prisma } from '../lib/prisma';
 
 // Role-Based Access Control (RBAC) middleware: Checks if a user has the right permission level to access a route
 export const authorizeRoles = (...roles: string[]) => {
   return async (req: AuthRequest, res: Response, next: NextFunction) => {
-    // Check cache
-    const cacheKey = `rbac:${req.user?.id}:${roles.join(',')}`;
-    if (redis.status === 'ready') {
-      const isAuthorized = await redis.get(cacheKey);
-      if (isAuthorized === 'true') {
-        return next();
+    if (!req.user) {
+      return res.status(403).json({ success: false, message: 'Forbidden: Insufficient role' });
+    }
+
+    let roleStr = typeof req.user.role === 'string' 
+      ? req.user.role 
+      : (req.user.role as any)?.name || '';
+
+    if (!roleStr && req.user.id) {
+      try {
+        const dbUser = await prisma.user.findUnique({
+          where: { id: req.user.id },
+          include: { role: true }
+        });
+        roleStr = dbUser?.role?.name || '';
+      } catch (err) {
+        // Fallback gracefully
       }
     }
 
-    // If there is no user attached to the request (not logged in), or the user's role isn't in the allowed list:
-    if (!req.user || !roles.includes(req.user.role)) {
-      // Block them and send a 403 Forbidden error
+    if (!roleStr) {
       return res.status(403).json({ success: false, message: 'Forbidden: Insufficient role' });
     }
-    
-    // Cache the authorization for 15 minutes
-    if (redis.status === 'ready') {
-      redis.setex(cacheKey, 900, 'true').catch(() => {});
+
+    const userRoleNormalized = roleStr.toUpperCase().replace(/[\s_]+/g, '');
+    const allowedNormalized = roles.map(r => r.toUpperCase().replace(/[\s_]+/g, ''));
+
+    const isAllowed = allowedNormalized.includes(userRoleNormalized)
+      || (allowedNormalized.some(r => r.includes('HR') || r.includes('ADMIN')) && (userRoleNormalized.includes('HR') || userRoleNormalized.includes('ADMIN')));
+
+    if (!isAllowed) {
+      return res.status(403).json({ success: false, message: 'Forbidden: Insufficient role' });
     }
 
-    // If they have the correct role, let them pass through to the actual route
     next();
   };
 };

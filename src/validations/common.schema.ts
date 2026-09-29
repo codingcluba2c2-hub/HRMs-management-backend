@@ -32,7 +32,7 @@ export const employeeNameValidation = z
   .trim()
   .min(2, 'Name must be at least 2 characters long')
   .max(50, 'Name cannot exceed 50 characters')
-  .regex(/^[a-zA-Z\'-]+$/, 'Name can only contain alphabets, apostrophes, and hyphens (no spaces allowed)');
+  .regex(/^[a-zA-Z\s\'-]+$/, 'Name can only contain alphabets, spaces, apostrophes, and hyphens');
 
 /**
  * Common Email Validation
@@ -161,16 +161,20 @@ export const searchValidation = z
  */
 export const dateValidation = z
   .string({ required_error: 'Date is required' })
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
-  .refine((val) => !isNaN(Date.parse(val)), 'Invalid calendar date')
-  .refine((val) => {
-    const date = new Date(val);
-    const minDate = new Date('1950-01-01');
-    return date >= minDate;
-  }, 'Date cannot be earlier than 1950')
-  .refine((val) => {
-    const date = new Date(val);
-    const maxDate = new Date();
-    maxDate.setFullYear(maxDate.getFullYear() + 5);
-    return date <= maxDate;
-  }, 'Date cannot be more than 5 years in the future');
+  .transform((val) => val.split('T')[0])
+  .pipe(
+    z.string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
+      .refine((val) => !isNaN(Date.parse(val)), 'Invalid calendar date')
+      .refine((val) => {
+        const date = new Date(val);
+        const minDate = new Date('1950-01-01');
+        return date >= minDate;
+      }, 'Date cannot be earlier than 1950')
+      .refine((val) => {
+        const date = new Date(val);
+        const maxDate = new Date();
+        maxDate.setFullYear(maxDate.getFullYear() + 5);
+        return date <= maxDate;
+      }, 'Date cannot be more than 5 years in the future')
+  );

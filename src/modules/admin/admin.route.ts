@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { 
-  getAllUsers, createUser, updateUser, deleteUser,
+  getAllUsers, getTenantEmployees, createUser, updateUser, deleteUser,
   getAllRoles, createRole, updateRole, deleteRole,
   getAllPermissions, createPermission, updatePermission, deletePermission,
   getAllSettings, createSetting, updateSetting, deleteSetting
@@ -18,7 +18,8 @@ router.use(authenticate);
 // ==========================================
 // User Management Routes (Super Admin Only)
 // ==========================================
-router.get('/users', getAllUsers); // Fetch all users in the system
+router.get('/users', getAllUsers); // Fetch all administrative tenant head users
+router.get('/tenant-employees', getTenantEmployees); // Fetch all tenant employees grouped by company
 router.post('/users', validateRequest({ body: createUserSchema }), createUser); // Create a new user (Validates data first)
 router.put('/users/:id', validateRequest({ body: updateUserSchema }), updateUser); // Update an existing user
 router.delete('/users/:id', deleteUser); // Delete a user by their ID

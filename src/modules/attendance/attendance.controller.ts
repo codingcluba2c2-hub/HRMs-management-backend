@@ -1710,7 +1710,7 @@ export const exportAdminExcel = async (req: Request, res: Response) => {
 
     // Generate Excel Workbook
     const workbook = new ExcelJS.Workbook();
-    workbook.creator = 'Mobiloitte HRMS Pro';
+    workbook.creator = 'HRMS Pro';
     workbook.created = new Date();
 
     // -------------------------------------------------------------
@@ -1721,7 +1721,7 @@ export const exportAdminExcel = async (req: Request, res: Response) => {
     // Header Title Rows
     sheet1.mergeCells('A1:Q1');
     const titleCell = sheet1.getCell('A1');
-    titleCell.value = 'Mobiloitte Technologies India Pvt. Ltd. — Attendance Report';
+    titleCell.value = `HRMS - Attendance Report`;
     titleCell.font = { name: 'Calibri', size: 16, bold: true, color: { argb: 'FFFFFF' } };
     titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E293B' } };
     titleCell.alignment = { vertical: 'middle', horizontal: 'center' };

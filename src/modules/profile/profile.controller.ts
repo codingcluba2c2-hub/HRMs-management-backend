@@ -60,6 +60,21 @@ export const getProfile = async (req: AuthRequest, res: Response) => {
     }
 
     const { passwordHash: _, ...sanitized } = user;
+
+    const empForCreator = (user as any).employee || await prisma.employee.findFirst({
+      where: { OR: [{ userId: user.id }, { email: { equals: userEmail, mode: 'insensitive' } }] }
+    });
+
+    if (empForCreator && empForCreator.createdById) {
+      const creator = await prisma.user.findUnique({ where: { id: empForCreator.createdById } });
+      if (creator) {
+        (sanitized as any).companyName = creator.companyName || sanitized.companyName;
+        (sanitized as any).companyWebsite = creator.companyWebsite || sanitized.companyWebsite;
+        (sanitized as any).companyAddress = creator.companyAddress || sanitized.companyAddress;
+        (sanitized as any).companyPhone = creator.companyPhone || sanitized.companyPhone;
+      }
+    }
+
     return res.status(200).json(new ApiResponse(true, "Profile fetched", sanitized));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
@@ -176,6 +191,20 @@ export const getFullProfile = async (req: AuthRequest, res: Response) => {
         sanitized.employee.accountNumber = decrypt(sanitized.employee.accountNumber);
       } catch (e) {
         console.error("Failed to decrypt account number for user", userEmail);
+      }
+    }
+
+    const empForCreatorFull = (user as any).employee || await prisma.employee.findFirst({
+      where: { OR: [{ userId: user.id }, { email: { equals: userEmail, mode: 'insensitive' } }] }
+    });
+
+    if (empForCreatorFull && empForCreatorFull.createdById) {
+      const creator = await prisma.user.findUnique({ where: { id: empForCreatorFull.createdById } });
+      if (creator) {
+        (sanitized as any).companyName = creator.companyName || sanitized.companyName;
+        (sanitized as any).companyWebsite = creator.companyWebsite || sanitized.companyWebsite;
+        (sanitized as any).companyAddress = creator.companyAddress || sanitized.companyAddress;
+        (sanitized as any).companyPhone = creator.companyPhone || sanitized.companyPhone;
       }
     }
     

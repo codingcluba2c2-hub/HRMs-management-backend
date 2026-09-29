@@ -343,6 +343,20 @@ export const assignDepartmentManager = async (req: Request, res: Response) => {
 
 export const getOrganizationOverview = async (req: Request, res: Response) => {
   try {
+    const userId = (req as any).user?.id;
+    let companyName: string | null = null;
+    if (userId) {
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      companyName = user?.companyName || null;
+      if (!companyName) {
+        const employee = await prisma.employee.findUnique({ where: { userId } });
+        if (employee && employee.createdById) {
+          const creator = await prisma.user.findUnique({ where: { id: employee.createdById } });
+          companyName = creator?.companyName || null;
+        }
+      }
+    }
+
     const totalDepartments = await prisma.department.count();
     const totalDesignations = await prisma.designation.count();
     const assignedEmployees = await prisma.employee.count({
@@ -413,6 +427,7 @@ export const getOrganizationOverview = async (req: Request, res: Response) => {
     const activeManagersCount = formattedDepartments.filter(d => d.manager !== null).length;
 
     return res.status(200).json(new ApiResponse(true, 'Organization overview fetched successfully', {
+      companyName,
       summary: {
         departments: totalDepartments,
         designations: totalDesignations,

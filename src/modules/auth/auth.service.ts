@@ -10,6 +10,17 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 
 
+const resolveUserCompanyName = async (user: any) => {
+  const employee = await prisma.employee.findFirst({
+    where: { OR: [{ userId: user.id }, { email: { equals: user.email, mode: 'insensitive' } }] }
+  });
+  if (employee && employee.createdById) {
+    const creator = await prisma.user.findUnique({ where: { id: employee.createdById } });
+    if (creator?.companyName) return creator.companyName;
+  }
+  return user.companyName || null;
+};
+
 export const login = async (email: string, password: string) => {
   const user = await prisma.user.findUnique({ where: { email }, include: { role: true } });
   if (!user) throw new Error('Invalid credentials');
@@ -31,7 +42,9 @@ export const login = async (email: string, password: string) => {
     { expiresIn: '7d' } // Long lived refresh token
   );
 
-  return { token, refreshToken, user: { id: user.id, email: user.email, role: roleName } };
+  const companyName = await resolveUserCompanyName(user);
+
+  return { token, refreshToken, user: { id: user.id, email: user.email, role: roleName, firstName: user.firstName, lastName: user.lastName, companyName: companyName || undefined } };
 };
 
 export const googleLogin = async (idToken: string) => {
@@ -66,7 +79,9 @@ export const googleLogin = async (idToken: string) => {
     { expiresIn: '7d' }
   );
 
-  return { token, refreshToken, user: { id: user.id, email: user.email, role: roleName } };
+  const companyName = await resolveUserCompanyName(user);
+
+  return { token, refreshToken, user: { id: user.id, email: user.email, role: roleName, firstName: user.firstName, lastName: user.lastName, companyName: companyName || undefined } };
 };
 
 // Generates a random 6-digit OTP, saves it securely, and emails it to the user
@@ -147,7 +162,9 @@ export const verifyLoginOtp = async (email: string, otp: string) => {
     { expiresIn: '7d' }
   );
 
-  return { token, refreshToken, user: { id: user.id, email: user.email, role: roleName } };
+  const companyName = await resolveUserCompanyName(user);
+
+  return { token, refreshToken, user: { id: user.id, email: user.email, role: roleName, firstName: user.firstName, lastName: user.lastName, companyName: companyName || undefined } };
 };
 
 // Initiates the "Forgot Password" workflow by sending a secure reset link to the user

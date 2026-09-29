@@ -11,13 +11,174 @@ import bcrypt from 'bcryptjs';
 // =======================
 export const getAllUsers = async (req: Request, res: Response) => {
   try {
+    const { includeEmployees, roleId } = req.query;
+
+    const filter: any = {};
+    if (includeEmployees !== 'true') {
+      // Exclude regular employee accounts from administrative Users directory
+      filter.role = {
+        name: { notIn: ['EMPLOYEE'] }
+      };
+    }
+
+    if (roleId && roleId !== 'ALL') {
+      filter.roleId = roleId;
+    }
+
     const users = await prisma.user.findMany({
+      where: filter,
       include: { role: true },
       orderBy: { createdAt: 'desc' }
     });
     // Remove password hashes
     const sanitized = users.map(({ passwordHash, ...rest }) => rest);
     return res.status(200).json(new ApiResponse(true, "Success", sanitized));
+  } catch (error: any) {
+    return res.status(500).json(new ApiResponse(false, error.message));
+  }
+};
+
+export const getTenantEmployees = async (req: Request, res: Response) => {
+  try {
+    const currentUser = (req as any).user;
+    const rawRole = currentUser?.role?.name || currentUser?.role || '';
+    const normalizedRole = typeof rawRole === 'string' ? rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_') : '';
+
+    if (normalizedRole !== 'SUPER_ADMIN' && normalizedRole !== 'SUPER_ADMINISTRATOR') {
+      return res.status(403).json(new ApiResponse(false, "Access Denied: Only Super Admin can access tenant workforce directory."));
+    }
+
+    const { tenant, search, department, status } = req.query;
+
+    // Fetch all employees with full relations
+    const employees = await prisma.employee.findMany({
+      where: { isDeleted: false },
+      include: {
+        department: { select: { id: true, name: true } },
+        designation: { select: { id: true, name: true } },
+        manager: { select: { id: true, firstName: true, lastName: true, employeeId: true } },
+        user: { select: { profilePic: true, companyName: true, role: { select: { name: true } } } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Fetch all HR Admin / Creator users to map tenant company details & roles
+    const hrUsers = await prisma.user.findMany({
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        companyName: true,
+        companyWebsite: true,
+        companyAddress: true,
+        companyPhone: true,
+        role: { select: { name: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const hrUserMap = new Map();
+    hrUsers.forEach(u => hrUserMap.set(u.id, u));
+
+    // Map each employee with tenant company info & creator HR head
+    const enrichedEmployees = employees.map(emp => {
+      const creator = emp.createdById ? hrUserMap.get(emp.createdById) : null;
+      const userRec = emp.userId ? hrUserMap.get(emp.userId) : null;
+
+      const tenantCompany = creator?.companyName || userRec?.companyName || emp.user?.companyName || "Default Enterprise Tenant";
+      const tenantHead = creator ? `${creator.firstName} ${creator.lastName}` : "System Admin";
+      const creatorRole = creator?.role?.name || "HR_MANAGER";
+
+      return {
+        ...emp,
+        tenantCompany,
+        tenantHead,
+        creatorId: creator?.id || null,
+        creatorRole,
+        creatorEmail: creator?.email || null,
+        creatorWebsite: creator?.companyWebsite || null,
+        creatorAddress: creator?.companyAddress || null,
+        creatorPhone: creator?.companyPhone || null
+      };
+    });
+
+    // Apply filtering if provided
+    let filtered = enrichedEmployees;
+    if (tenant && tenant !== 'ALL') {
+      filtered = filtered.filter(e => e.tenantCompany === tenant);
+    }
+    if (search) {
+      const searchLower = (search as string).toLowerCase();
+      filtered = filtered.filter(e =>
+        `${e.firstName} ${e.lastName}`.toLowerCase().includes(searchLower) ||
+        e.employeeId.toLowerCase().includes(searchLower) ||
+        e.email.toLowerCase().includes(searchLower) ||
+        e.tenantCompany.toLowerCase().includes(searchLower)
+      );
+    }
+    if (department && department !== 'ALL') {
+      filtered = filtered.filter(e => e.departmentId === department);
+    }
+    if (status && status !== 'ALL') {
+      filtered = filtered.filter(e => e.status === status);
+    }
+
+    // Grouping by Tenant Company into Tree Hierarchy Structure
+    const tenantTreeMap = new Map<string, {
+      companyName: string;
+      headName: string;
+      headEmail: string;
+      headRole: string;
+      headId: string | null;
+      count: number;
+      activeCount: number;
+      employees: typeof filtered;
+    }>();
+
+    enrichedEmployees.forEach(emp => {
+      const comp = emp.tenantCompany;
+      if (!tenantTreeMap.has(comp)) {
+        tenantTreeMap.set(comp, {
+          companyName: comp,
+          headName: emp.tenantHead,
+          headEmail: emp.creatorEmail || '',
+          headRole: emp.creatorRole || 'Corporate Professional',
+          headId: emp.creatorId || null,
+          count: 0,
+          activeCount: 0,
+          employees: []
+        });
+      }
+      const group = tenantTreeMap.get(comp)!;
+      group.count += 1;
+      if (emp.status === 'ACTIVE') {
+        group.activeCount += 1;
+      }
+    });
+
+    // Populate filtered employees into their respective tree nodes
+    filtered.forEach(emp => {
+      const comp = emp.tenantCompany;
+      if (tenantTreeMap.has(comp)) {
+        tenantTreeMap.get(comp)!.employees.push(emp);
+      }
+    });
+
+    const treeStructure = Array.from(tenantTreeMap.values());
+    const tenantList = treeStructure.map(({ employees, ...summary }) => summary);
+
+    return res.status(200).json(new ApiResponse(true, "Tenant workforce retrieved", {
+      summary: {
+        totalTenants: tenantList.length,
+        totalEmployees: enrichedEmployees.length,
+        activeEmployees: enrichedEmployees.filter(e => e.status === 'ACTIVE').length,
+        avgPerTenant: tenantList.length > 0 ? Math.round(enrichedEmployees.length / tenantList.length) : 0
+      },
+      tenants: tenantList,
+      tree: treeStructure,
+      employees: filtered
+    }));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
   }

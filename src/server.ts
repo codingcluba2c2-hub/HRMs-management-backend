@@ -8,7 +8,6 @@ dotenv.config();
 // Server entrypoint reloaded
 import compression from 'compression';
 import authRoutes from './modules/auth/auth.route';
-import orgSetupRoutes from './modules/org-setup/orgSetup.route';
 import departmentRoutes from './modules/departments/department.route';
 import designationRoutes from './modules/designations/designation.route';
 import employeeRoutes from './modules/employees/employee.route';
@@ -106,7 +105,6 @@ app.get('/api', (req: Request, res: Response) => {
 // Setup specialized routes
 app.use('/api/public', publicRoutes);
 app.use('/api/auth', authRoutes);
-app.use('/api/org-setup', orgSetupRoutes);
 app.use('/api/designations', designationRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/employees', employeeRoutes);
