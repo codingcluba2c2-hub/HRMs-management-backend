@@ -101,6 +101,7 @@ model Department {
 
   designations Designation[]
   employees    Employee[] @relation("EmployeeDepartment")
+  weeklyRosters WeeklyRoster[]
 }
 
 model Designation {
@@ -116,6 +117,7 @@ model Designation {
   updatedAt    DateTime @updatedAt
 
   employees    Employee[]
+  weeklyRosters WeeklyRoster[]
 }
 
 model Employee {
@@ -192,6 +194,8 @@ model Employee {
   payrollRecords      Payroll[]
   payrollQueries      PayrollQuery[]
   documents           EmployeeDocument[]
+  rosterEntries       RosterEntry[]
+  rosterAuditLogs     RosterAuditLog[]
 
   @@index([email])
   @@index([userId])
@@ -215,6 +219,7 @@ model Shift {
 
   employees         Employee[]
   attendanceRecords AttendanceRecord[]
+  rosterEntries     RosterEntry[]
 }
 
 model Holiday {
@@ -645,3 +650,91 @@ model SystemMetric {
   status      String   @default("HEALTHY")
   timestamp   DateTime @default(now())
 }
+
+model WeeklyRoster {
+  id            String    @id @default(uuid())
+  departmentId  String
+  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  designationId String?
+  designation   Designation? @relation(fields: [designationId], references: [id], onDelete: SetNull)
+  
+  weekStart     DateTime  // Normalized Monday 00:00:00
+  weekEnd       DateTime  // Normalized Sunday 23:59:59
+  status        String    @default("DRAFT") // DRAFT, IN_REVIEW, PUBLISHED, LOCKED
+  version       Int       @default(1)
+  
+  createdById   String?
+  publishedById String?
+  publishedAt   DateTime?
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  entries         RosterEntry[]
+  historyVersions RosterVersion[]
+  auditLogs       RosterAuditLog[]
+
+  @@index([departmentId, weekStart])
+  @@index([status])
+}
+
+model RosterEntry {
+  id             String       @id @default(uuid())
+  rosterId       String
+  roster         WeeklyRoster @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  
+  employeeId     String
+  employee       Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  
+  date           DateTime     // Normalized date 00:00:00
+  type           String       @default("SHIFT") // SHIFT, WEEK_OFF, LEAVE, HOLIDAY, WFH, HALF_DAY
+  
+  shiftId        String?
+  shift          Shift?       @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  
+  leaveType      String?      // e.g. SICK, CASUAL, EARNED
+  notes          String?
+  isOverridden   Boolean      @default(false)
+  overrideReason String?
+  
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([rosterId, employeeId, date])
+  @@index([employeeId, date])
+}
+
+model RosterVersion {
+  id            String       @id @default(uuid())
+  rosterId      String
+  roster        WeeklyRoster @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  
+  version       Int
+  snapshot      Json         // JSON snapshot of all entries at this version
+  publishedById String?
+  publishedAt   DateTime     @default(now())
+  changeSummary String?
+
+  @@index([rosterId, version])
+}
+
+model RosterAuditLog {
+  id          String       @id @default(uuid())
+  rosterId    String
+  roster      WeeklyRoster @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  
+  employeeId  String?
+  employee    Employee?    @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  
+  date        DateTime?
+  action      String       // SHIFT_CHANGED, WEEK_OFF_SET, PUBLISHED, OVERRIDDEN, IMPORTED
+  changedById String?
+  oldValue    String?
+  newValue    String?
+  
+  createdAt   DateTime     @default(now())
+
+  @@index([rosterId])
+  @@index([employeeId])
+}
+

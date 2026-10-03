@@ -3,7 +3,8 @@ import {
   getAllUsers, getTenantEmployees, createUser, updateUser, deleteUser,
   getAllRoles, createRole, updateRole, deleteRole,
   getAllPermissions, createPermission, updatePermission, deletePermission,
-  getAllSettings, createSetting, updateSetting, deleteSetting
+  getAllSettings, createSetting, updateSetting, deleteSetting,
+  getRolePagePermissionsApi, saveRolePagePermissionsApi
 } from './admin.controller';
 import { authenticate } from '../../middlewares/authMiddleware';
 import { validateRequest } from '../../middlewares/validateRequest';
@@ -31,6 +32,8 @@ router.get('/roles', getAllRoles); // Fetch all custom roles
 router.post('/roles', validateRequest({ body: createRoleSchema }), createRole); // Create a new role (e.g. "HR Manager")
 router.put('/roles/:id', validateRequest({ body: updateRoleSchema }), updateRole); // Update a role's name/description
 router.delete('/roles/:id', deleteRole); // Delete a role
+router.get('/role-page-permissions', getRolePagePermissionsApi); // Fetch role page permissions from DB
+router.post('/role-page-permissions', saveRolePagePermissionsApi); // Save role page permissions to DB
 
 // ==========================================
 // Permissions Management Routes

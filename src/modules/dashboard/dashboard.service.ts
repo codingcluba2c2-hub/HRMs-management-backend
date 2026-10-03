@@ -111,134 +111,230 @@ export const getSuperAdminStats = async () => {
   });
 };
 
-export const getHRManagerStats = async (trend: string = '30d') => {
-  return await withCache(`dashboard:hrmanager:${trend}`, 300, async () => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+export const getHRManagerStats = async (trend: string = '30d', user?: any) => {
+  const userId = user?.id || 'default';
+  return await withCache(`dashboard:hrmanager:${userId}:${trend}`, 60, async () => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-  const totalEmployees = await prisma.employee.count();
-  
-  const presentToday = await prisma.attendanceRecord.count({ 
-    where: { date: today, status: 'PRESENT' } 
-  });
-  
-  const onLeaveToday = await prisma.leaveRequest.count({ 
-    where: { 
-      status: 'APPROVED',
-      startDate: { lte: new Date() },
-      endDate: { gte: today }
-    } 
-  }); 
+    const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
+    const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+    
+    const tenantFilter: any = (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') 
+      ? { isDeleted: false } 
+      : { 
+          isDeleted: false, 
+          createdById: user?.id,
+          NOT: [
+            { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
+            { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
+          ]
+        };
 
-  const pendingLeaves = await prisma.leaveRequest.count({ where: { status: 'PENDING' } });
-  const pendingAttendance = await prisma.attendanceCorrection.count({ where: { status: 'PENDING' } }).catch(() => 0);
-  
-  // Pending Tasks Array
-  const rawPendingLeaves = await prisma.leaveRequest.findMany({ where: { status: 'PENDING' }, take: 5, include: { employee: true }});
-  const rawPendingCorrections = await prisma.attendanceCorrection.findMany({ where: { status: 'PENDING' }, take: 5, include: { employee: true }}).catch(() => []);
-  
-  const pendingTasks = [
-    ...rawPendingLeaves.map(l => ({
-      id: `L-${l.id}`, title: `Leave Request: ${l.employee.firstName}`, description: l.leaveType, type: 'LEAVE', status: 'NORMAL', createdAt: l.createdAt
-    })),
-    ...rawPendingCorrections.map(c => ({
-      id: `C-${c.id}`, title: `Attendance Correction: ${c.employee.firstName}`, description: c.correctionType, type: 'CORRECTION', status: 'URGENT', createdAt: c.createdAt
-    }))
-  ].sort((a: any, b: any) => b.createdAt - a.createdAt).slice(0, 8);
+    const totalEmployees = await prisma.employee.count({ where: tenantFilter });
+    
+    const presentToday = await prisma.attendanceRecord.count({ 
+      where: { 
+        date: today, 
+        status: 'PRESENT',
+        employee: tenantFilter
+      } 
+    });
+    
+    const onLeaveToday = await prisma.leaveRequest.count({ 
+      where: { 
+        status: 'APPROVED',
+        startDate: { lte: new Date() },
+        endDate: { gte: today },
+        employee: tenantFilter
+      } 
+    }); 
 
-  const deptDistribution = await prisma.employee.groupBy({
-    by: ['departmentId'],
-    _count: { _all: true }
-  });
+    const pendingLeaves = await prisma.leaveRequest.count({ 
+      where: { 
+        status: 'PENDING',
+        employee: tenantFilter
+      } 
+    });
+    
+    const pendingAttendance = await prisma.attendanceCorrection.count({ 
+      where: { 
+        status: 'PENDING',
+        employee: tenantFilter
+      } 
+    }).catch(() => 0);
+    
+    // Pending Tasks Array
+    const rawPendingLeaves = await prisma.leaveRequest.findMany({ 
+      where: { 
+        status: 'PENDING',
+        employee: tenantFilter
+      }, 
+      take: 5, 
+      include: { employee: true }
+    });
+    
+    const rawPendingCorrections = await prisma.attendanceCorrection.findMany({ 
+      where: { 
+        status: 'PENDING',
+        employee: tenantFilter
+      }, 
+      take: 5, 
+      include: { employee: true }
+    }).catch(() => []);
+    
+    const pendingTasks = [
+      ...rawPendingLeaves.map(l => ({
+        id: `L-${l.id}`, title: `Leave Request: ${l.employee.firstName}`, description: l.leaveType, type: 'LEAVE', status: 'NORMAL', createdAt: l.createdAt
+      })),
+      ...rawPendingCorrections.map(c => ({
+        id: `C-${c.id}`, title: `Attendance Correction: ${c.employee.firstName}`, description: c.correctionType, type: 'CORRECTION', status: 'URGENT', createdAt: c.createdAt
+      }))
+    ].sort((a: any, b: any) => b.createdAt - a.createdAt).slice(0, 8);
 
-  const departments = await prisma.department.findMany();
-  const deptMap = departments.reduce((acc: any, dept) => {
-    acc[dept.id] = dept.name;
-    return acc;
-  }, {});
+    const deptDistribution = await prisma.employee.groupBy({
+      by: ['departmentId'],
+      where: tenantFilter,
+      _count: { _all: true }
+    });
 
-  const pieChartData = deptDistribution.map((item) => ({
-    name: item.departmentId ? deptMap[item.departmentId] : "Unassigned",
-    value: item._count._all
-  }));
+    const departments = await prisma.department.findMany();
+    const deptMap = departments.reduce((acc: any, dept) => {
+      acc[dept.id] = dept.name;
+      return acc;
+    }, {});
 
-  // Dynamic Recruitment Pipeline Aggregation from Database
-  const candidateCounts = await prisma.candidate.groupBy({
-    by: ['status'],
-    _count: { id: true }
-  }).catch(() => []);
+    const pieChartData = deptDistribution.map((item) => ({
+      name: item.departmentId ? deptMap[item.departmentId] : "Unassigned",
+      value: item._count._all
+    }));
 
-  const totalCandidatesCount = await prisma.candidate.count().catch(() => 0);
+    // Dynamic Recruitment Pipeline Aggregation from Database
+    const candidateCounts = await prisma.candidate.groupBy({
+      by: ['status'],
+      _count: { id: true }
+    }).catch(() => []);
 
-  const statusCounts: { [key: string]: number } = {};
-  candidateCounts.forEach(c => {
-    statusCounts[c.status] = c._count.id;
-  });
+    const totalCandidatesCount = await prisma.candidate.count().catch(() => 0);
 
-  const appliedCount = statusCounts['APPLIED'] || statusCounts['PENDING'] || (totalCandidatesCount > 0 ? totalCandidatesCount : 0);
-  const screeningCount = statusCounts['IN_PROGRESS'] || statusCounts['SCREENING'] || 0;
-  const interviewCount = statusCounts['INTERVIEW'] || 0;
-  const offeredCount = statusCounts['OFFERED'] || 0;
-  const hiredCount = statusCounts['SELECTED'] || statusCounts['HIRED'] || 0;
+    const statusCounts: { [key: string]: number } = {};
+    candidateCounts.forEach(c => {
+      statusCounts[c.status] = c._count.id;
+    });
 
-  const pipeline = [
-    { stage: 'Applied', label: 'Applied', count: appliedCount, color: '#3b82f6' },
-    { stage: 'Screening', label: 'Screening', count: screeningCount, color: '#06b6d4' },
-    { stage: 'Interview', label: 'Interview', count: interviewCount, color: '#8b5cf6' },
-    { stage: 'Offered', label: 'Offered', count: offeredCount, color: '#f59e0b' }
-  ];
+    const appliedCount = statusCounts['APPLIED'] || statusCounts['PENDING'] || (totalCandidatesCount > 0 ? totalCandidatesCount : 0);
+    const screeningCount = statusCounts['IN_PROGRESS'] || statusCounts['SCREENING'] || 0;
+    const interviewCount = statusCounts['INTERVIEW'] || 0;
+    const offeredCount = statusCounts['OFFERED'] || 0;
+    const hiredCount = statusCounts['SELECTED'] || statusCounts['HIRED'] || 0;
 
-  if (hiredCount > 0) {
-    pipeline.push({ stage: 'Hired', label: 'Hired', count: hiredCount, color: '#10b981' });
-  }
+    const pipeline = [
+      { stage: 'Applied', label: 'Applied', count: appliedCount, color: '#3b82f6' },
+      { stage: 'Screening', label: 'Screening', count: screeningCount, color: '#06b6d4' },
+      { stage: 'Interview', label: 'Interview', count: interviewCount, color: '#8b5cf6' },
+      { stage: 'Offered', label: 'Offered', count: offeredCount, color: '#f59e0b' }
+    ];
 
-  const openRecruitmentCount = await prisma.jobRole.count().catch(() => 0);
+    if (hiredCount > 0) {
+      pipeline.push({ stage: 'Hired', label: 'Hired', count: hiredCount, color: '#10b981' });
+    }
 
-  const announcements = await prisma.announcement.findMany({
-    where: { isActive: true, OR: [{ target: 'ALL' }, { target: 'HR_MANAGER' }] },
-    orderBy: { createdAt: 'desc' },
-    take: 5,
-    include: { author: { select: { firstName: true, lastName: true } } }
-  }).catch(() => []);
+    const openRecruitmentCount = await prisma.jobRole.count().catch(() => 0);
 
-  const insights = [
-    { id: '1', type: 'INFO', message: `Attendance increased by 6% this week.` },
-    { id: '2', type: 'WARNING', message: `${pendingLeaves} leave requests require approval.` },
-    { id: '3', type: 'WARNING', message: `${pendingAttendance} attendance corrections are pending review.` }
-  ];
+    const announcements = await prisma.announcement.findMany({
+      where: { isActive: true, OR: [{ target: 'ALL' }, { target: 'HR_MANAGER' }] },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      include: { author: { select: { firstName: true, lastName: true } } }
+    }).catch(() => []);
 
-  const upcomingBirthdays = await getUpcomingBirthdays();
-  const workAnniversaries = await getUpcomingAnniversaries();
+    const insights = [
+      { id: '1', type: 'INFO', message: `Attendance updated for your active workforce.` },
+      { id: '2', type: 'WARNING', message: `${pendingLeaves} leave requests require approval.` },
+      { id: '3', type: 'WARNING', message: `${pendingAttendance} attendance corrections are pending review.` }
+    ];
 
-  const deptAttendance = departments.map(d => ({
-    department: d.name,
-    present: Math.floor(Math.random() * 20),
-    absent: Math.floor(Math.random() * 5),
-    onLeave: Math.floor(Math.random() * 2)
-  }));
+    const upcomingBirthdays = await getUpcomingBirthdays(tenantFilter);
+    const workAnniversaries = await getUpcomingAnniversaries(tenantFilter);
 
-  return {
-    metrics: [
-      { title: "Total Employees", value: totalEmployees, trend: "Active Workforce" },
-      { title: "Present Today", value: presentToday, trend: "Checked In" },
-      { title: "Attendance Rate", value: totalEmployees > 0 ? `${Math.round((presentToday / totalEmployees) * 100)}%` : '0%', trend: "Today" },
-      { title: "On Leave Today", value: onLeaveToday, trend: "Approved Leaves" },
-      { title: "Pending Approvals", value: pendingLeaves + pendingAttendance, trend: "Requires Action" },
-      { title: "Open Recruitment", value: openRecruitmentCount || 4, trend: "Active Jobs" }
-    ],
-    pieChartData,
-    pendingTasks,
-    announcements,
-    insights,
-    pipeline,
-    upcomingBirthdays,
-    workAnniversaries,
-    deptAttendance,
-    recentActivities: [
-      { id: '1', title: 'New Employee Onboarded', description: 'John Doe joined IT Dept', timestamp: new Date(), statusColor: 'bg-green-500' },
-      { id: '2', title: 'Payroll Generated', description: 'June 2026 Payroll', timestamp: new Date(Date.now() - 3600000), statusColor: 'bg-purple-500' }
-    ]
-  };
+    // Dynamic Department Attendance Summary based on actual tenant employees
+    const tenantEmployees = await prisma.employee.findMany({
+      where: tenantFilter,
+      select: { id: true, departmentId: true }
+    });
+
+    const tenantEmpIds = tenantEmployees.map(e => e.id);
+
+    const todayAttendanceRecords = tenantEmpIds.length > 0 ? await prisma.attendanceRecord.findMany({
+      where: {
+        employeeId: { in: tenantEmpIds },
+        date: today
+      },
+      select: { employeeId: true, status: true }
+    }) : [];
+
+    const todayLeaveRequests = tenantEmpIds.length > 0 ? await prisma.leaveRequest.findMany({
+      where: {
+        employeeId: { in: tenantEmpIds },
+        status: 'APPROVED',
+        startDate: { lte: new Date() },
+        endDate: { gte: today }
+      },
+      select: { employeeId: true }
+    }) : [];
+
+    const presentEmpSet = new Set(todayAttendanceRecords.filter(r => r.status === 'PRESENT').map(r => r.employeeId));
+    const leaveEmpSet = new Set(todayLeaveRequests.map(r => r.employeeId));
+
+    const deptEmpMap = new Map<string, string[]>();
+    tenantEmployees.forEach(e => {
+      const deptId = e.departmentId || 'unassigned';
+      if (!deptEmpMap.has(deptId)) deptEmpMap.set(deptId, []);
+      deptEmpMap.get(deptId)!.push(e.id);
+    });
+
+    const deptAttendance = Array.from(deptEmpMap.entries()).map(([deptId, empIds]) => {
+      const deptName = deptId !== 'unassigned' ? (deptMap[deptId] || 'Department') : 'Unassigned';
+      let presentCount = 0;
+      let leaveCount = 0;
+      let absentCount = 0;
+
+      empIds.forEach(empId => {
+        if (presentEmpSet.has(empId)) presentCount++;
+        else if (leaveEmpSet.has(empId)) leaveCount++;
+        else absentCount++;
+      });
+
+      return {
+        department: deptName,
+        present: presentCount,
+        absent: absentCount,
+        onLeave: leaveCount
+      };
+    });
+
+    return {
+      metrics: [
+        { title: "Total Employees", value: totalEmployees, trend: "Active Workforce" },
+        { title: "Present Today", value: presentToday, trend: "Checked In" },
+        { title: "Attendance Rate", value: totalEmployees > 0 ? `${Math.round((presentToday / totalEmployees) * 100)}%` : '0%', trend: "Today" },
+        { title: "On Leave Today", value: onLeaveToday, trend: "Approved Leaves" },
+        { title: "Pending Approvals", value: pendingLeaves + pendingAttendance, trend: "Requires Action" },
+        { title: "Open Recruitment", value: openRecruitmentCount || 4, trend: "Active Jobs" }
+      ],
+      pieChartData,
+      pendingTasks,
+      announcements,
+      insights,
+      pipeline,
+      upcomingBirthdays,
+      workAnniversaries,
+      deptAttendance,
+      recentActivities: [
+        { id: '1', title: 'New Employee Onboarded', description: 'Team member joined', timestamp: new Date(), statusColor: 'bg-green-500' },
+        { id: '2', title: 'Payroll Generated', description: 'Recent Payroll', timestamp: new Date(Date.now() - 3600000), statusColor: 'bg-purple-500' }
+      ]
+    };
   });
 };
 
@@ -250,14 +346,19 @@ export const getEmployeeStats = async (userId: string) => {
   const employee = await prisma.employee.findUnique({ 
     where: { userId },
     include: {
+      shift: true,
       attendanceRecords: {
-        where: { date: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
+        where: { date: { gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) } },
         orderBy: { date: 'desc' },
-        take: 7
+        take: 90
       },
       payrollRecords: {
         orderBy: { createdAt: 'desc' },
         take: 3
+      },
+      leaveRequests: {
+        where: { status: 'APPROVED' },
+        select: { id: true, leaveType: true, startDate: true, endDate: true, status: true }
       },
       documents: true
     }
@@ -334,6 +435,55 @@ export const getEmployeeStats = async (userId: string) => {
     orderBy: { date: 'asc' }
   }).catch(() => []);
 
+  const rosterEntries = await prisma.rosterEntry.findMany({
+    where: {
+      employeeId: empId,
+      date: {
+        gte: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
+        lte: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000)
+      }
+    },
+    include: {
+      shift: {
+        select: { id: true, name: true, startTime: true, endTime: true, breakDuration: true, weeklyOff: true }
+      },
+      roster: {
+        select: { status: true, version: true }
+      }
+    },
+    orderBy: { date: 'asc' }
+  }).catch(() => []);
+
+  // Check if today has a specific roster entry shift assigned
+  const todayStr = today.toISOString().split('T')[0];
+  const todayRosterEntry = rosterEntries.find(r => r.date.toISOString().split('T')[0] === todayStr);
+
+  let activeShift = employee.shift;
+  if (todayRosterEntry && todayRosterEntry.shift) {
+    activeShift = todayRosterEntry.shift as any;
+  }
+
+  const shiftInfo = activeShift ? {
+    id: activeShift.id,
+    name: activeShift.name,
+    startTime: activeShift.startTime,
+    endTime: activeShift.endTime,
+    timing: `${activeShift.startTime} - ${activeShift.endTime}`,
+    breakTime: `${activeShift.breakDuration || 60} Mins`,
+    workingDays: activeShift.weeklyOff?.length 
+      ? `Excl. ${activeShift.weeklyOff.join(', ')}` 
+      : 'Monday to Friday',
+    weeklyOff: activeShift.weeklyOff || ["Saturday", "Sunday"]
+  } : {
+    name: 'General Day Shift',
+    startTime: '09:00',
+    endTime: '18:00',
+    timing: '09:00 AM - 06:00 PM',
+    breakTime: '01:00 PM - 02:00 PM (1 Hour)',
+    workingDays: 'Monday to Friday',
+    weeklyOff: ["Saturday", "Sunday"]
+  };
+
   // Calculate profile completion
   let completedFields = 0;
   const totalFields = 10;
@@ -355,16 +505,25 @@ export const getEmployeeStats = async (userId: string) => {
   ];
 
   return {
+    employeeDetails: {
+      id: employee.id,
+      userId: employee.userId,
+      departmentId: employee.departmentId,
+      designationId: employee.designationId
+    },
     metrics: [
       { title: "Today's Status", value: todaysAttendanceStatus, trend: "Attendance" },
       { title: "Present Days", value: presentDays, trend: "This Month" },
       { title: "Attendance %", value: `${attendancePercentage}%`, trend: "This Month" },
-      { title: "Working Hours", value: "38h", trend: "This Week" },
+      { title: "Shift Schedule", value: shiftInfo.timing, trend: shiftInfo.name },
       { title: "Leave Balance", value: leaveBalance, trend: "Annual Leaves" },
       { title: "Holidays", value: holidays.length, trend: "This Year" }
     ],
     pieChartData,
     barChartData,
+    shiftInfo,
+    rosterEntries,
+    leaveRequests: employee.leaveRequests || [],
     attendanceHistory: employee.attendanceRecords,
     recentPayslips: employee.payrollRecords,
     assignedDocuments: employee.documents,
@@ -379,12 +538,13 @@ export const getEmployeeStats = async (userId: string) => {
       { id: '2', title: 'Leave Approved', description: 'Sick Leave for tomorrow', timestamp: new Date(Date.now() - 86400000), statusColor: 'bg-blue-500' }
     ]
   };
+
   });
 };
 
-export const getUpcomingBirthdays = async () => {
+export const getUpcomingBirthdays = async (tenantFilter: any = {}) => {
   const employees = await prisma.employee.findMany({
-    where: { dob: { not: null }, status: 'ACTIVE' },
+    where: { ...tenantFilter, dob: { not: null }, status: 'ACTIVE' },
     select: {
       id: true,
       firstName: true,
@@ -430,9 +590,9 @@ export const getUpcomingBirthdays = async () => {
   return upcoming;
 };
 
-export const getUpcomingAnniversaries = async () => {
+export const getUpcomingAnniversaries = async (tenantFilter: any = {}) => {
   const employees = await prisma.employee.findMany({
-    where: { status: 'ACTIVE' },
+    where: { ...tenantFilter, status: 'ACTIVE' },
     select: {
       id: true,
       firstName: true,

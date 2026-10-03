@@ -166,8 +166,15 @@ export const getLeaveSummary = async (userId: string, role: string) => {
       ]
     };
   } else {
-    // HR / SUPER ADMIN KPI Summary
-    const totalEmployees = await prisma.employee.count();
+    const totalEmployees = await prisma.employee.count({
+      where: {
+        isDeleted: false,
+        NOT: [
+          { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
+          { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
+        ]
+      } as any
+    });
     const pending = await prisma.leaveRequest.count({ where: { status: 'PENDING' } });
     
     const now = new Date();

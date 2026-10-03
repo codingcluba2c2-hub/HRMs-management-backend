@@ -24,7 +24,24 @@ export const getOrCreateEmployeeForUser = async (userId: string) => {
     include: { shift: true, department: true, designation: true }
   });
 
-  if (employee) return employee;
+  if (employee) {
+    // Check if a published weekly roster entry overrides the default shift for today
+    const today = getTodayDate();
+    const rosterEntry = await prisma.rosterEntry.findFirst({
+      where: {
+        employeeId: employee.id,
+        date: today,
+        roster: { status: 'PUBLISHED' }
+      },
+      include: { shift: true }
+    });
+
+    if (rosterEntry && rosterEntry.shift) {
+      employee.shift = rosterEntry.shift;
+    }
+
+    return employee;
+  }
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) return null;
@@ -1153,7 +1170,15 @@ export const getAdminSummary = async (req: Request, res: Response) => {
     const { datePreset = 'TODAY', startDate, endDate, singleDate } = req.query as any;
     const { start, end } = getDateRangeByPreset(datePreset, startDate, endDate, singleDate);
 
-    const totalEmployees = await prisma.employee.count();
+    const totalEmployees = await prisma.employee.count({
+      where: {
+        isDeleted: false,
+        NOT: [
+          { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
+          { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
+        ]
+      } as any
+    });
 
     const rangeRecords = await prisma.attendanceRecord.findMany({
       where: { date: { gte: start, lte: end } },

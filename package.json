@@ -14,6 +14,7 @@
     "@bull-board/express": "^8.1.0",
     "@prisma/client": "^5.10.2",
     "@types/exceljs": "^0.5.3",
+    "@types/socket.io": "^3.0.1",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.79.2",
     "cloudinary": "^1.41.3",
@@ -34,6 +35,7 @@
     "multer-storage-cloudinary": "^4.0.0",
     "nodemailer": "^9.0.1",
     "puppeteer": "^25.2.1",
+    "socket.io": "^4.8.4",
     "swagger-jsdoc": "^6.3.0",
     "swagger-ui-express": "^5.0.1",
     "zod": "^3.22.4"

@@ -15,8 +15,18 @@ export const getSummary = async (req: Request, res: Response) => {
   try {
     const { start, end } = getTodayRange();
 
+    const notSuperAdminFilter: any = {
+      isDeleted: false,
+      NOT: [
+        { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
+        { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
+      ]
+    };
+
     // 1. KPI Section
-    const allEmployeesCount = await prisma.employee.count({ where: { status: 'ACTIVE' } });
+    const allEmployeesCount = await prisma.employee.count({ 
+      where: { status: 'ACTIVE', ...notSuperAdminFilter } 
+    });
     const todaysRecords = await prisma.attendanceRecord.findMany({
       where: { date: { gte: start, lte: end } },
       include: { logs: true }
@@ -98,7 +108,17 @@ export const getOperationsList = async (req: Request, res: Response) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
-    const activeEmployees = await prisma.employee.findMany({ where: { status: 'ACTIVE' }, select: { id: true, shiftId: true } });
+    const activeEmployees = await prisma.employee.findMany({ 
+      where: { 
+        status: 'ACTIVE',
+        isDeleted: false,
+        NOT: [
+          { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
+          { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
+        ]
+      }, 
+      select: { id: true, shiftId: true } 
+    });
     const existingToday = await prisma.attendanceRecord.findMany({ where: { date: today }, select: { employeeId: true } });
     const existingIds = new Set(existingToday.map(e => e.employeeId));
     
@@ -183,7 +203,16 @@ export const getAnalytics = async (req: Request, res: Response) => {
       const end = new Date(d); end.setHours(23,59,59,999);
       
       const present = await prisma.attendanceRecord.count({ where: { date: { gte: start, lte: end }, status: 'PRESENT' } });
-      const absent = await prisma.employee.count({ where: { status: 'ACTIVE' } }) - present;
+      const absent = await prisma.employee.count({ 
+        where: { 
+          status: 'ACTIVE',
+          isDeleted: false,
+          NOT: [
+            { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
+            { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
+          ]
+        } 
+      }) - present;
       trend.push({ name: d.toLocaleDateString('en-US', { weekday: 'short' }), present, absent: absent > 0 ? absent : 0 });
     }
 

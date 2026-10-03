@@ -510,3 +510,49 @@ export const getAllAuditLogs = async (req: Request, res: Response) => {
     return res.status(500).json(new ApiResponse(false, error.message));
   }
 };
+
+// =======================
+// ROLE PAGE PERMISSIONS (REAL-TIME DB SYNC)
+// =======================
+export const getRolePagePermissionsApi = async (req: Request, res: Response) => {
+  try {
+    const settings = await prisma.systemSetting.findMany({
+      where: { key: { startsWith: 'page_permissions_' } }
+    });
+
+    const permissionsMap: Record<string, string[]> = {};
+    settings.forEach(s => {
+      try {
+        const roleKey = s.key.replace('page_permissions_', '');
+        permissionsMap[roleKey] = JSON.parse(s.value);
+      } catch (e) {}
+    });
+
+    return res.status(200).json(new ApiResponse(true, "Role page permissions fetched", permissionsMap));
+  } catch (error: any) {
+    return res.status(500).json(new ApiResponse(false, error.message));
+  }
+};
+
+export const saveRolePagePermissionsApi = async (req: Request, res: Response) => {
+  try {
+    const { roleName, allowedHrefs } = req.body;
+    if (!roleName || !Array.isArray(allowedHrefs)) {
+      return res.status(400).json(new ApiResponse(false, "roleName and allowedHrefs array are required."));
+    }
+
+    const normalizedRole = roleName.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+    const key = `page_permissions_${normalizedRole}`;
+    const value = JSON.stringify(allowedHrefs);
+
+    await prisma.systemSetting.upsert({
+      where: { key },
+      update: { value, group: 'Permissions' },
+      create: { key, value, group: 'Permissions' }
+    });
+
+    return res.status(200).json(new ApiResponse(true, `Permissions saved for ${normalizedRole}`, { key, allowedHrefs }));
+  } catch (error: any) {
+    return res.status(500).json(new ApiResponse(false, error.message));
+  }
+};

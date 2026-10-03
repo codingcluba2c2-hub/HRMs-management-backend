@@ -16,7 +16,7 @@ export const getDashboardStats = async (req: AuthRequest, res: Response) => {
     if (userRole === 'SUPER_ADMIN') {
       data = await getSuperAdminStats();
     } else if (userRole === 'HR_MANAGER' || userRole === 'HR_ADMIN') {
-      data = await getHRManagerStats(trend);
+      data = await getHRManagerStats(trend, req.user);
     } else {
       data = await getEmployeeStats(req.user?.id || '');
     }

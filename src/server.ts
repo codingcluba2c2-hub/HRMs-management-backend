@@ -12,6 +12,7 @@ import departmentRoutes from './modules/departments/department.route';
 import designationRoutes from './modules/designations/designation.route';
 import employeeRoutes from './modules/employees/employee.route';
 import shiftRoutes from './modules/shifts/shift.route';
+import rosterRoutes from './modules/roster/roster.route';
 import holidayRoutes from './modules/holidays/holiday.route';
 import attendanceRoutes from './modules/attendance/attendance.route';
 import attendanceRequestRoutes from './modules/attendanceRequests/attendance_request.route';
@@ -109,6 +110,7 @@ app.use('/api/designations', designationRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/employees', employeeRoutes);
 app.use('/api/shifts', shiftRoutes);
+app.use('/api/roster', rosterRoutes);
 app.use('/api/holidays', holidayRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/attendance-requests', attendanceRequestRoutes);
@@ -134,6 +136,11 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
 app.use(errorHandler);
 
 import os from 'os';
+import http from 'http';
+import { initSocketServer } from './lib/socket';
+
+const server = http.createServer(app);
+initSocketServer(server);
 
 const startServer = async () => {
   try {
@@ -141,7 +148,7 @@ const startServer = async () => {
     console.log('✅ PostgreSQL Connected');
     console.log('✅ Prisma Connected');
     
-    app.listen(PORT as number, '0.0.0.0', () => {
+    server.listen(PORT as number, '0.0.0.0', () => {
       let localIp = 'localhost';
       const interfaces = os.networkInterfaces();
       for (const name of Object.keys(interfaces)) {
@@ -153,6 +160,7 @@ const startServer = async () => {
       }
 
       console.log(`✅ Server Running on http://localhost:${PORT}`);
+      console.log(`⚡ Real-Time Socket.IO Server Ready on http://localhost:${PORT}`);
       console.log('\n========================================================');
       console.log(`⚙️ Backend API accessible on your network via:`);
       console.log(`👉 http://${localIp}:${PORT}`);
@@ -168,7 +176,6 @@ if (!process.env.VERCEL) {
   startServer();
 }
 
-
 // Graceful Shutdown for Nodemon & typical termination signals
 const gracefulShutdown = async () => {
   console.log('⏳ Disconnecting Prisma...');
@@ -182,3 +189,4 @@ process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
 
 export default app;
+
