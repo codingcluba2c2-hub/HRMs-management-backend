@@ -1,5 +1,6 @@
 import { prisma } from '../../lib/prisma';
 import { withCache } from '../../lib/redis';
+import { getTenantEmployeeFilter, getTenantDepartmentFilter } from '../../utils/tenantFilter';
 
 export const getSuperAdminStats = async () => {
   return await withCache('dashboard:superadmin', 300, async () => {
@@ -117,19 +118,7 @@ export const getHRManagerStats = async (trend: string = '30d', user?: any) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
-    const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
-    
-    const tenantFilter: any = (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') 
-      ? { isDeleted: false } 
-      : { 
-          isDeleted: false, 
-          createdById: user?.id,
-          NOT: [
-            { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
-            { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
-          ]
-        };
+    const tenantFilter = getTenantEmployeeFilter(user);
 
     const totalEmployees = await prisma.employee.count({ where: tenantFilter });
     
@@ -198,7 +187,8 @@ export const getHRManagerStats = async (trend: string = '30d', user?: any) => {
       _count: { _all: true }
     });
 
-    const departments = await prisma.department.findMany();
+    const tenantDeptFilter = await getTenantDepartmentFilter(user);
+    const departments = await prisma.department.findMany({ where: tenantDeptFilter });
     const deptMap = departments.reduce((acc: any, dept) => {
       acc[dept.id] = dept.name;
       return acc;

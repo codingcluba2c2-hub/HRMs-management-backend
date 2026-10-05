@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../../lib/prisma';
 import { ApiResponse } from '../../utils/ApiResponse';
+import { getTenantEmployeeFilter } from '../../utils/tenantFilter';
 
 // Helper to get start and end of today
 const getTodayRange = () => {
@@ -14,21 +15,14 @@ const getTodayRange = () => {
 export const getSummary = async (req: Request, res: Response) => {
   try {
     const { start, end } = getTodayRange();
-
-    const notSuperAdminFilter: any = {
-      isDeleted: false,
-      NOT: [
-        { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
-        { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
-      ]
-    };
+    const tenantFilter = getTenantEmployeeFilter((req as any).user);
 
     // 1. KPI Section
     const allEmployeesCount = await prisma.employee.count({ 
-      where: { status: 'ACTIVE', ...notSuperAdminFilter } 
+      where: { status: 'ACTIVE', ...tenantFilter } 
     });
     const todaysRecords = await prisma.attendanceRecord.findMany({
-      where: { date: { gte: start, lte: end } },
+      where: { date: { gte: start, lte: end }, employee: tenantFilter },
       include: { logs: true }
     });
 
@@ -107,19 +101,16 @@ export const getOperationsList = async (req: Request, res: Response) => {
     // so they show up in all views (All Dates, Today, etc.)
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const tenantFilter = getTenantEmployeeFilter((req as any).user);
     
     const activeEmployees = await prisma.employee.findMany({ 
       where: { 
         status: 'ACTIVE',
-        isDeleted: false,
-        NOT: [
-          { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
-          { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
-        ]
+        ...tenantFilter
       }, 
       select: { id: true, shiftId: true } 
     });
-    const existingToday = await prisma.attendanceRecord.findMany({ where: { date: today }, select: { employeeId: true } });
+    const existingToday = await prisma.attendanceRecord.findMany({ where: { date: today, employee: tenantFilter }, select: { employeeId: true } });
     const existingIds = new Set(existingToday.map(e => e.employeeId));
     
     const toCreate = activeEmployees.filter(e => !existingIds.has(e.id)).map(e => ({
@@ -134,9 +125,14 @@ export const getOperationsList = async (req: Request, res: Response) => {
     }
 
     // Now proceed with normal pagination across AttendanceRecords
-    const whereClause: any = {};
+    const whereClause: any = {
+      employee: {
+        ...tenantFilter
+      }
+    };
     if (search) {
       whereClause.employee = {
+        ...whereClause.employee,
         OR: [
           { firstName: { contains: search as string, mode: 'insensitive' } },
           { lastName: { contains: search as string, mode: 'insensitive' } },

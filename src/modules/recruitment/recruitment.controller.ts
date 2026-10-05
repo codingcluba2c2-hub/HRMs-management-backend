@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 
 import { ApiResponse } from '../../utils/ApiResponse';
 import ImageKit from 'imagekit';
+import { getTenantJobRoleFilter } from '../../utils/tenantFilter';
 
 const imagekit = new ImageKit({
   publicKey: process.env.IMAGEKIT_PUBLIC_KEY!,
@@ -10,12 +11,14 @@ const imagekit = new ImageKit({
   urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT!
 });
 
-
-
 // Candidates
 export const getAllCandidates = async (req: Request, res: Response) => {
   try {
+    const tenantJobRoleFilter = await getTenantJobRoleFilter((req as any).user);
     const candidates = await prisma.candidate.findMany({
+      where: {
+        jobRole: tenantJobRoleFilter
+      },
       include: { jobRole: true },
       orderBy: { createdAt: 'desc' }
     });
@@ -103,7 +106,9 @@ export const deleteCandidate = async (req: Request, res: Response) => {
 // Job Roles
 export const getAllJobRoles = async (req: Request, res: Response) => {
   try {
+    const tenantJobRoleFilter = await getTenantJobRoleFilter((req as any).user);
     const roles = await prisma.jobRole.findMany({
+      where: tenantJobRoleFilter,
       orderBy: { title: 'asc' }
     });
     return res.status(200).json(new ApiResponse(true, "Success", roles));
@@ -115,17 +120,32 @@ export const getAllJobRoles = async (req: Request, res: Response) => {
 export const createJobRole = async (req: Request, res: Response) => {
   try {
     const { title, description } = req.body;
-    
-    const existing = await prisma.jobRole.findUnique({
-      where: { title }
+    const userId = (req as any).user?.id;
+
+    if (!title || !title.trim()) {
+      return res.status(400).json(new ApiResponse(false, "Job role title is required."));
+    }
+
+    const formattedTitle = title.trim();
+
+    const tenantJobRoleFilter = await getTenantJobRoleFilter((req as any).user);
+    const existing = await prisma.jobRole.findFirst({
+      where: {
+        title: { equals: formattedTitle, mode: 'insensitive' },
+        ...tenantJobRoleFilter
+      }
     });
 
     if (existing) {
-      return res.status(400).json(new ApiResponse(false, "Job role already exists.", existing));
+      return res.status(400).json(new ApiResponse(false, "Job role with this title already exists in your organization.", existing));
     }
 
     const role = await prisma.jobRole.create({
-      data: { title, description }
+      data: {
+        title: formattedTitle,
+        description: description?.trim() || null,
+        createdById: userId || null
+      }
     });
 
     return res.status(201).json(new ApiResponse(true, "Job role created successfully", role));

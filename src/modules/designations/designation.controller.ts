@@ -1,10 +1,13 @@
 import { prisma } from '../../lib/prisma';
 import { Request, Response } from 'express';
 import { ApiResponse } from '../../utils/ApiResponse';
+import { getTenantDesignationFilter, getTenantDepartmentFilter, getTenantEmployeeFilter } from '../../utils/tenantFilter';
 
 export const createDesignation = async (req: Request, res: Response) => {
   try {
     const { name, code, level = 1, description, departmentId, status = true } = req.body;
+    const userId = (req as any).user?.id;
+    const tenantDeptFilter = await getTenantDepartmentFilter((req as any).user);
 
     if (!name || !name.trim()) {
       return res.status(400).json(new ApiResponse(false, 'Designation name is required'));
@@ -14,18 +17,19 @@ export const createDesignation = async (req: Request, res: Response) => {
       return res.status(400).json(new ApiResponse(false, 'Department selection is required for a designation'));
     }
 
-    // Check if department exists
-    const department = await prisma.department.findUnique({ where: { id: departmentId } });
+    // Check if department exists and belongs to current tenant
+    const department = await prisma.department.findFirst({ where: { id: departmentId, ...tenantDeptFilter } });
     if (!department) {
-      return res.status(404).json(new ApiResponse(false, 'Selected department does not exist'));
+      return res.status(404).json(new ApiResponse(false, 'Selected department does not exist or access denied'));
     }
 
     const formattedName = name.trim();
     const formattedCode = code ? code.trim().toUpperCase() : `${department.code || 'DES'}-${formattedName.slice(0, 3).toUpperCase()}`;
 
-    // Check duplicate name within department or code globally
+    // Check duplicate name within department or code within tenant
     const existing = await prisma.designation.findFirst({
       where: {
+        createdById: userId,
         OR: [
           { departmentId, name: { equals: formattedName, mode: 'insensitive' } },
           { code: formattedCode }
@@ -44,7 +48,8 @@ export const createDesignation = async (req: Request, res: Response) => {
         level: level ? String(level) : "1",
         description: description?.trim() || null,
         departmentId,
-        status: status ?? true
+        status: status ?? true,
+        createdById: userId || null
       },
       include: {
         department: {
@@ -59,7 +64,7 @@ export const createDesignation = async (req: Request, res: Response) => {
     // Audit Log
     await prisma.auditLog.create({
       data: {
-        userId: (req as any).user?.id || null,
+        userId: userId || null,
         action: 'DESIGNATION_CREATED',
         entity: 'Designation',
         entityId: designation.id
@@ -75,8 +80,10 @@ export const createDesignation = async (req: Request, res: Response) => {
 export const getDesignations = async (req: Request, res: Response) => {
   try {
     const { departmentId, status } = req.query;
+    const tenantDesigFilter = await getTenantDesignationFilter((req as any).user);
+    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
 
-    const whereClause: any = {};
+    const whereClause: any = { ...tenantDesigFilter };
     if (departmentId && typeof departmentId === 'string') {
       whereClause.departmentId = departmentId;
     }
@@ -91,7 +98,7 @@ export const getDesignations = async (req: Request, res: Response) => {
           select: { id: true, name: true, code: true }
         },
         _count: {
-          select: { employees: true }
+          select: { employees: { where: tenantEmpFilter } }
         }
       },
       orderBy: [{ level: 'asc' }, { name: 'asc' }]
@@ -107,15 +114,18 @@ export const updateDesignation = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { name, code, level, description, departmentId, status } = req.body;
+    const userId = (req as any).user?.id;
+    const tenantDesigFilter = await getTenantDesignationFilter((req as any).user);
 
-    const existingDesig = await prisma.designation.findUnique({ where: { id } });
+    const existingDesig = await prisma.designation.findFirst({ where: { id, ...tenantDesigFilter } });
     if (!existingDesig) {
       return res.status(404).json(new ApiResponse(false, 'Designation not found'));
     }
 
     const targetDeptId = departmentId || existingDesig.departmentId;
     if (departmentId) {
-      const dept = await prisma.department.findUnique({ where: { id: departmentId } });
+      const tenantDeptFilter = await getTenantDepartmentFilter((req as any).user);
+      const dept = await prisma.department.findFirst({ where: { id: departmentId, ...tenantDeptFilter } });
       if (!dept) {
         return res.status(404).json(new ApiResponse(false, 'Selected department does not exist'));
       }
@@ -128,6 +138,7 @@ export const updateDesignation = async (req: Request, res: Response) => {
       const conflict = await prisma.designation.findFirst({
         where: {
           id: { not: id },
+          createdById: existingDesig.createdById || userId,
           OR: [
             { departmentId: targetDeptId, name: { equals: formattedName, mode: 'insensitive' } },
             ...(formattedCode ? [{ code: formattedCode }] : [])
@@ -162,7 +173,7 @@ export const updateDesignation = async (req: Request, res: Response) => {
     // Audit Log
     await prisma.auditLog.create({
       data: {
-        userId: (req as any).user?.id || null,
+        userId: userId || null,
         action: 'DESIGNATION_UPDATED',
         entity: 'Designation',
         entityId: id
@@ -180,8 +191,9 @@ export const deleteDesignation = async (req: Request, res: Response) => {
     const { id } = req.params;
     const force = req.query.force === 'true';
     const action = req.query.action as string;
+    const tenantDesigFilter = await getTenantDesignationFilter((req as any).user);
 
-    const desig = await prisma.designation.findUnique({ where: { id } });
+    const desig = await prisma.designation.findFirst({ where: { id, ...tenantDesigFilter } });
     if (!desig) return res.status(404).json(new ApiResponse(false, 'Designation not found'));
 
     if (action === 'deactivate') {
@@ -236,4 +248,3 @@ export const deleteDesignation = async (req: Request, res: Response) => {
     return res.status(500).json(new ApiResponse(false, error.message));
   }
 };
-

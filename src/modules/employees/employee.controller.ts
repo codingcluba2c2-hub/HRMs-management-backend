@@ -5,6 +5,7 @@ import { EmployeeService } from './employee.service';
 import { prisma } from '../../lib/prisma';
 import bcrypt from 'bcryptjs';
 import { decrypt } from '../../utils/encryption';
+import { getTenantEmployeeFilter } from '../../utils/tenantFilter';
 
 export const createEmployee = async (req: AuthRequest, res: Response) => {
   try {
@@ -145,25 +146,7 @@ export const getEmployees = async (req: AuthRequest, res: Response) => {
         }).catch(() => {});
       }
     }
-    const getTenantFilter = (req: AuthRequest) => {
-      const rawRole = typeof req.user?.role === 'string' ? req.user.role : (req.user?.role as any)?.name || '';
-      const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
-      
-      if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
-        return { isDeleted: false };
-      }
-
-      return {
-        isDeleted: false,
-        createdById: req.user?.id,
-        NOT: [
-          { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
-          { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
-        ]
-      };
-    };
-
-    const tenantFilter = getTenantFilter(req);
+    const tenantFilter = getTenantEmployeeFilter(req.user);
     let filter: any = { ...tenantFilter };
 
     if (search) {
@@ -314,20 +297,7 @@ export const deleteEmployee = async (req: Request, res: Response) => {
 
 export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
   try {
-    const rawRole = typeof req.user?.role === 'string' ? req.user.role : (req.user?.role as any)?.name || '';
-    const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
-    
-    const filter = (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') 
-      ? { isDeleted: false } 
-      : { 
-          isDeleted: false, 
-          createdById: req.user?.id,
-          NOT: [
-            { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
-            { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
-          ]
-        };
-
+    const filter = getTenantEmployeeFilter(req.user);
     const summary = await EmployeeService.getDashboardSummary(filter);
     res.status(200).json(new ApiResponse(true, 'Dashboard summary fetched', summary));
   } catch (error: any) {
@@ -337,20 +307,7 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
 
 export const getAnalytics = async (req: AuthRequest, res: Response) => {
   try {
-    const rawRole = typeof req.user?.role === 'string' ? req.user.role : (req.user?.role as any)?.name || '';
-    const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
-
-    const filter = (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') 
-      ? { isDeleted: false } 
-      : { 
-          isDeleted: false, 
-          createdById: req.user?.id,
-          NOT: [
-            { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
-            { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
-          ]
-        };
-
+    const filter = getTenantEmployeeFilter(req.user);
     const analytics = await EmployeeService.getAnalytics(filter);
     res.status(200).json(new ApiResponse(true, 'Analytics fetched', analytics));
   } catch (error: any) {

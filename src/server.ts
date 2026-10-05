@@ -142,11 +142,31 @@ import { initSocketServer } from './lib/socket';
 const server = http.createServer(app);
 initSocketServer(server);
 
+const repairTenantData = async () => {
+  try {
+    // 1. Ensure all employees with a user profile (like HR Admins/Managers) have createdById set to their own userId
+    const userEmployees = await prisma.employee.findMany({
+      where: { userId: { not: null } }
+    });
+    for (const emp of userEmployees) {
+      if (emp.userId) {
+        await prisma.employee.update({
+          where: { id: emp.id },
+          data: { createdById: emp.userId }
+        }).catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.error('Tenant data sync warning:', err);
+  }
+};
+
 const startServer = async () => {
   try {
     await prisma.$connect();
     console.log('✅ PostgreSQL Connected');
     console.log('✅ Prisma Connected');
+    await repairTenantData();
     
     server.listen(PORT as number, '0.0.0.0', () => {
       let localIp = 'localhost';

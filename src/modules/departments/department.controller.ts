@@ -1,17 +1,37 @@
 import { prisma } from '../../lib/prisma';
 import { Request, Response } from 'express';
 import { ApiResponse } from '../../utils/ApiResponse';
+import { getTenantDepartmentFilter, getTenantEmployeeFilter } from '../../utils/tenantFilter';
 
 // Summary KPI metrics for Organization Management page
 export const getDepartmentSummary = async (req: Request, res: Response) => {
   try {
-    const totalDepartments = await prisma.department.count();
-    const totalDesignations = await prisma.designation.count();
+    const tenantDeptFilter = await getTenantDepartmentFilter((req as any).user);
+    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
+    const userId = (req as any).user?.id;
+    const isSuperAdmin = (req as any).user?.role === 'SUPER_ADMIN' || (req as any).user?.role?.name === 'SUPER_ADMIN';
+
+    const totalDepartments = await prisma.department.count({ where: tenantDeptFilter });
+    
+    const designationFilter = isSuperAdmin ? {} : {
+      OR: [
+        { createdById: userId },
+        { department: tenantDeptFilter }
+      ]
+    };
+    const totalDesignations = await prisma.designation.count({ where: designationFilter });
+
     const assignedEmployees = await prisma.employee.count({
-      where: { departmentId: { not: null } }
+      where: {
+        ...tenantEmpFilter,
+        departmentId: { not: null }
+      }
     });
     const departmentManagers = await prisma.department.count({
-      where: { managerId: { not: null } }
+      where: {
+        ...tenantDeptFilter,
+        managerId: { not: null }
+      }
     });
 
     return res.status(200).json(new ApiResponse(true, 'Organization summary fetched successfully', {
@@ -27,7 +47,11 @@ export const getDepartmentSummary = async (req: Request, res: Response) => {
 
 export const getDepartments = async (req: Request, res: Response) => {
   try {
+    const tenantDeptFilter = await getTenantDepartmentFilter((req as any).user);
+    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
+
     const departments = await prisma.department.findMany({
+      where: tenantDeptFilter,
       include: {
         manager: {
           select: {
@@ -42,12 +66,12 @@ export const getDepartments = async (req: Request, res: Response) => {
         },
         designations: {
           include: {
-            _count: { select: { employees: true } }
+            _count: { select: { employees: { where: tenantEmpFilter } } }
           },
           orderBy: { name: 'asc' }
         },
         _count: {
-          select: { employees: true, designations: true }
+          select: { employees: { where: tenantEmpFilter }, designations: true }
         }
       },
       orderBy: { name: 'asc' }
@@ -67,6 +91,7 @@ export const getDepartments = async (req: Request, res: Response) => {
 export const createDepartment = async (req: Request, res: Response) => {
   try {
     const { name, code, description, status = true, managerId } = req.body;
+    const userId = (req as any).user?.id;
 
     if (!name || !name.trim()) {
       return res.status(400).json(new ApiResponse(false, 'Department name is required'));
@@ -79,7 +104,10 @@ export const createDepartment = async (req: Request, res: Response) => {
     const formattedCode = code.trim().toUpperCase();
 
     const existing = await prisma.department.findFirst({
-      where: { OR: [{ name: { equals: formattedName, mode: 'insensitive' } }, { code: formattedCode }] }
+      where: {
+        createdById: userId,
+        OR: [{ name: { equals: formattedName, mode: 'insensitive' } }, { code: formattedCode }]
+      }
     });
 
     if (existing) {
@@ -97,7 +125,8 @@ export const createDepartment = async (req: Request, res: Response) => {
         code: formattedCode,
         description: description?.trim() || null,
         status: status ?? true,
-        managerId: managerId || null
+        managerId: managerId || null,
+        createdById: userId || null
       },
       include: {
         manager: {
@@ -109,7 +138,7 @@ export const createDepartment = async (req: Request, res: Response) => {
     // Audit log
     await prisma.auditLog.create({
       data: {
-        userId: (req as any).user?.id || null,
+        userId: userId || null,
         action: 'DEPARTMENT_CREATED',
         entity: 'Department',
         entityId: department.id
@@ -126,8 +155,10 @@ export const updateDepartment = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { name, code, description, status, managerId } = req.body;
+    const userId = (req as any).user?.id;
+    const tenantDeptFilter = await getTenantDepartmentFilter((req as any).user);
 
-    const existingDept = await prisma.department.findUnique({ where: { id } });
+    const existingDept = await prisma.department.findFirst({ where: { id, ...tenantDeptFilter } });
     if (!existingDept) return res.status(404).json(new ApiResponse(false, 'Department not found'));
 
     const formattedCode = code ? code.trim().toUpperCase() : existingDept.code;
@@ -137,6 +168,7 @@ export const updateDepartment = async (req: Request, res: Response) => {
       const conflict = await prisma.department.findFirst({
         where: {
           id: { not: id },
+          createdById: existingDept.createdById || userId,
           OR: [
             { name: { equals: formattedName, mode: 'insensitive' } },
             { code: formattedCode }
@@ -194,7 +226,7 @@ export const updateDepartment = async (req: Request, res: Response) => {
     // Audit log
     await prisma.auditLog.create({
       data: {
-        userId: (req as any).user?.id || null,
+        userId: userId || null,
         action: 'DEPARTMENT_UPDATED',
         entity: 'Department',
         entityId: id
@@ -212,8 +244,9 @@ export const deleteDepartment = async (req: Request, res: Response) => {
     const { id } = req.params;
     const force = req.query.force === 'true';
     const action = req.query.action as string;
+    const tenantDeptFilter = await getTenantDepartmentFilter((req as any).user);
 
-    const dept = await prisma.department.findUnique({ where: { id } });
+    const dept = await prisma.department.findFirst({ where: { id, ...tenantDeptFilter } });
     if (!dept) return res.status(404).json(new ApiResponse(false, 'Department not found'));
 
     if (action === 'deactivate') {
@@ -284,8 +317,9 @@ export const assignDepartmentManager = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { managerId } = req.body;
+    const tenantDeptFilter = await getTenantDepartmentFilter((req as any).user);
 
-    const department = await prisma.department.findUnique({ where: { id } });
+    const department = await prisma.department.findFirst({ where: { id, ...tenantDeptFilter } });
     if (!department) return res.status(404).json(new ApiResponse(false, 'Department not found'));
 
     if (managerId) {
@@ -344,6 +378,10 @@ export const assignDepartmentManager = async (req: Request, res: Response) => {
 export const getOrganizationOverview = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id;
+    const tenantDeptFilter = await getTenantDepartmentFilter((req as any).user);
+    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
+    const isSuperAdmin = (req as any).user?.role === 'SUPER_ADMIN' || (req as any).user?.role?.name === 'SUPER_ADMIN';
+
     let companyName: string | null = null;
     if (userId) {
       const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -357,13 +395,25 @@ export const getOrganizationOverview = async (req: Request, res: Response) => {
       }
     }
 
-    const totalDepartments = await prisma.department.count();
-    const totalDesignations = await prisma.designation.count();
+    const totalDepartments = await prisma.department.count({ where: tenantDeptFilter });
+    
+    const designationFilter = isSuperAdmin ? {} : {
+      OR: [
+        { createdById: userId },
+        { department: tenantDeptFilter }
+      ]
+    };
+    const totalDesignations = await prisma.designation.count({ where: designationFilter });
+
     const assignedEmployees = await prisma.employee.count({
-      where: { departmentId: { not: null } }
+      where: {
+        ...tenantEmpFilter,
+        departmentId: { not: null }
+      }
     });
 
     const departments = await prisma.department.findMany({
+      where: tenantDeptFilter,
       include: {
         manager: {
           select: {
@@ -378,12 +428,12 @@ export const getOrganizationOverview = async (req: Request, res: Response) => {
         },
         designations: {
           include: {
-            _count: { select: { employees: true } }
+            _count: { select: { employees: { where: tenantEmpFilter } } }
           },
           orderBy: [{ level: 'asc' }, { name: 'asc' }]
         },
         _count: {
-          select: { employees: true, designations: true }
+          select: { employees: { where: tenantEmpFilter }, designations: true }
         }
       },
       orderBy: { name: 'asc' }
@@ -440,5 +490,3 @@ export const getOrganizationOverview = async (req: Request, res: Response) => {
     return res.status(500).json(new ApiResponse(false, error.message));
   }
 };
-
-

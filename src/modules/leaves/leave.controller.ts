@@ -8,7 +8,7 @@ export const getLeaveSummary = async (req: AuthRequest, res: Response) => {
     const rawRole = req.user?.role || '';
     const userRole = typeof rawRole === 'string' ? rawRole.toUpperCase().trim().replace(/\s+/g, '_') : '';
     
-    const summary = await leaveService.getLeaveSummary(req.user?.id || '', userRole);
+    const summary = await leaveService.getLeaveSummary(req.user, userRole);
     return res.status(200).json(new ApiResponse(true, "Leave summary fetched", summary));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message || "Failed to fetch summary"));
@@ -21,7 +21,7 @@ export const getLeaveRequests = async (req: AuthRequest, res: Response) => {
     const userRole = typeof rawRole === 'string' ? rawRole.toUpperCase().trim().replace(/\s+/g, '_') : '';
     
     const filters = req.query;
-    const requests = await leaveService.getLeaveRequests(req.user?.id || '', userRole, filters);
+    const requests = await leaveService.getLeaveRequests(req.user, userRole, filters);
     
     return res.status(200).json(new ApiResponse(true, "Leave requests fetched", requests));
   } catch (error: any) {
@@ -63,7 +63,7 @@ export const updateLeaveStatus = async (req: AuthRequest, res: Response) => {
 // MASTER LEAVE TYPES
 export const getLeaveTypes = async (req: AuthRequest, res: Response) => {
   try {
-    const types = await leaveService.getLeaveTypes();
+    const types = await leaveService.getLeaveTypes(req.user);
     return res.status(200).json(new ApiResponse(true, "Leave types fetched", types));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
@@ -123,7 +123,7 @@ export const updateLeavePolicy = async (req: AuthRequest, res: Response) => {
 export const getAllEmployeeBalances = async (req: AuthRequest, res: Response) => {
   try {
     const filters = req.query;
-    const balances = await leaveService.getAllEmployeeBalances(filters);
+    const balances = await leaveService.getAllEmployeeBalances(req.user, filters);
     return res.status(200).json(new ApiResponse(true, "Employee leave balances fetched", balances));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
@@ -162,7 +162,7 @@ export const getLeaveAnalytics = async (req: AuthRequest, res: Response) => {
 
 export const getLeaveCalendar = async (req: AuthRequest, res: Response) => {
   try {
-    const calendar = await leaveService.getLeaveCalendar();
+    const calendar = await leaveService.getLeaveCalendar(req.user);
     return res.status(200).json(new ApiResponse(true, "Calendar fetched", calendar));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message || "Failed to fetch calendar"));

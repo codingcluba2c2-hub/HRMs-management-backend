@@ -2,20 +2,26 @@ import { prisma } from '../../lib/prisma';
 import { Request, Response } from 'express';
 import { ApiResponse } from '../../utils/ApiResponse';
 import { invalidateCachePattern } from '../../lib/redis';
+import { getTenantShiftFilter, getTenantEmployeeFilter } from '../../utils/tenantFilter';
 
 export const getAll = async (req: Request, res: Response) => {
   try {
+    const tenantShiftFilter = await getTenantShiftFilter((req as any).user);
+    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
+
     let shifts = await prisma.shift.findMany({
+      where: tenantShiftFilter,
       include: {
         _count: {
-          select: { employees: true }
+          select: { employees: { where: tenantEmpFilter } }
         }
       },
       orderBy: { createdAt: 'asc' }
     });
 
-    // Auto-seed default shifts if database has 0 shifts
-    if (shifts.length === 0) {
+    // Auto-seed default shifts if database has 0 shifts globally
+    const globalCount = await prisma.shift.count();
+    if (globalCount === 0) {
       const defaultShifts = [
         {
           name: "General Day Shift",
@@ -24,7 +30,8 @@ export const getAll = async (req: Request, res: Response) => {
           graceTime: 15,
           breakDuration: 60,
           weeklyOff: ["Saturday", "Sunday"],
-          status: true
+          status: true,
+          createdById: null
         },
         {
           name: "Morning Roster",
@@ -33,7 +40,8 @@ export const getAll = async (req: Request, res: Response) => {
           graceTime: 10,
           breakDuration: 45,
           weeklyOff: ["Sunday"],
-          status: true
+          status: true,
+          createdById: null
         },
         {
           name: "Night Roster",
@@ -42,7 +50,8 @@ export const getAll = async (req: Request, res: Response) => {
           graceTime: 15,
           breakDuration: 60,
           weeklyOff: ["Sunday"],
-          status: true
+          status: true,
+          createdById: null
         },
         {
           name: "Flexible Shift",
@@ -51,7 +60,8 @@ export const getAll = async (req: Request, res: Response) => {
           graceTime: 30,
           breakDuration: 60,
           weeklyOff: ["Saturday", "Sunday"],
-          status: true
+          status: true,
+          createdById: null
         }
       ];
 
@@ -60,9 +70,10 @@ export const getAll = async (req: Request, res: Response) => {
       }
 
       shifts = await prisma.shift.findMany({
+        where: tenantShiftFilter,
         include: {
           _count: {
-            select: { employees: true }
+            select: { employees: { where: tenantEmpFilter } }
           }
         },
         orderBy: { createdAt: 'asc' }
@@ -77,7 +88,13 @@ export const getAll = async (req: Request, res: Response) => {
 
 export const create = async (req: Request, res: Response) => {
   try {
-    const data = await prisma.shift.create({ data: req.body });
+    const userId = (req as any).user?.id;
+    const shiftData = {
+      ...req.body,
+      createdById: userId || null
+    };
+
+    const data = await prisma.shift.create({ data: shiftData });
     await invalidateCachePattern(`dashboard:*`);
     return res.status(201).json(new ApiResponse(true, "Shift created successfully", data));
   } catch (error: any) {
@@ -88,6 +105,11 @@ export const create = async (req: Request, res: Response) => {
 export const update = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const tenantShiftFilter = await getTenantShiftFilter((req as any).user);
+
+    const existing = await prisma.shift.findFirst({ where: { id, ...tenantShiftFilter } });
+    if (!existing) return res.status(404).json(new ApiResponse(false, "Shift not found or access denied"));
+
     const data = await prisma.shift.update({
       where: { id },
       data: req.body
@@ -102,6 +124,11 @@ export const update = async (req: Request, res: Response) => {
 export const remove = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const tenantShiftFilter = await getTenantShiftFilter((req as any).user);
+
+    const existing = await prisma.shift.findFirst({ where: { id, ...tenantShiftFilter } });
+    if (!existing) return res.status(404).json(new ApiResponse(false, "Shift not found or access denied"));
+
     // Unlink employees before deleting shift
     await prisma.employee.updateMany({
       where: { shiftId: id },
@@ -118,15 +145,10 @@ export const remove = async (req: Request, res: Response) => {
 export const getRoster = async (req: Request, res: Response) => {
   try {
     const { departmentId, search, shiftId } = req.query;
+    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
+
     const where: any = { 
-      isDeleted: false,
-      NOT: {
-        user: {
-          role: {
-            name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR'] }
-          }
-        }
-      }
+      ...tenantEmpFilter
     };
 
     if (departmentId && departmentId !== 'ALL') {
@@ -142,11 +164,15 @@ export const getRoster = async (req: Request, res: Response) => {
     }
 
     if (search) {
-      where.OR = [
-        { firstName: { contains: search as string, mode: 'insensitive' } },
-        { lastName: { contains: search as string, mode: 'insensitive' } },
-        { employeeId: { contains: search as string, mode: 'insensitive' } },
-        { email: { contains: search as string, mode: 'insensitive' } }
+      where.AND = [
+        {
+          OR: [
+            { firstName: { contains: search as string, mode: 'insensitive' } },
+            { lastName: { contains: search as string, mode: 'insensitive' } },
+            { employeeId: { contains: search as string, mode: 'insensitive' } },
+            { email: { contains: search as string, mode: 'insensitive' } }
+          ]
+        }
       ];
     }
 
@@ -181,8 +207,13 @@ export const assignShift = async (req: Request, res: Response) => {
       return res.status(400).json(new ApiResponse(false, "employeeIds array is required"));
     }
 
+    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
+
     await prisma.employee.updateMany({
-      where: { id: { in: employeeIds } },
+      where: {
+        id: { in: employeeIds },
+        ...tenantEmpFilter
+      },
       data: { shiftId: shiftId || null }
     });
 
@@ -192,4 +223,3 @@ export const assignShift = async (req: Request, res: Response) => {
     return res.status(500).json(new ApiResponse(false, error.message));
   }
 };
-

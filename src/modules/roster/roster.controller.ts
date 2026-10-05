@@ -5,6 +5,7 @@ import { AuthRequest } from '../../middlewares/authMiddleware';
 import ExcelJS from 'exceljs';
 import { emitRosterEvent } from '../../lib/socket';
 import { invalidateCachePattern } from '../../lib/redis';
+import { getTenantEmployeeFilter } from '../../utils/tenantFilter';
 
 /**
  * Helper to normalize date to YYYY-MM-DD 00:00:00 UTC
@@ -98,10 +99,11 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
     }
 
     // Fetch employees in department & designation
+    const tenantFilter = getTenantEmployeeFilter(req.user);
     const employeeWhere: any = {
       departmentId: departmentId as string,
-      isDeleted: false,
-      status: 'ACTIVE'
+      status: 'ACTIVE',
+      ...tenantFilter
     };
     if (targetDesignationId) {
       employeeWhere.designationId = targetDesignationId;
@@ -826,10 +828,11 @@ export const exportXlsx = async (req: AuthRequest, res: Response) => {
     }
 
     // Fetch employees & roster
+    const tenantFilter = getTenantEmployeeFilter(req.user);
     const employeeWhere: any = {
       departmentId,
-      isDeleted: false,
-      status: 'ACTIVE'
+      status: 'ACTIVE',
+      ...tenantFilter
     };
     if (designationId && designationId !== 'ALL') {
       employeeWhere.designationId = designationId;
@@ -1036,7 +1039,8 @@ export const downloadTemplate = async (req: AuthRequest, res: Response) => {
     });
 
     if (departmentId && departmentId !== 'ALL') {
-      const empWhere: any = { departmentId: departmentId as string, isDeleted: false };
+      const tenantFilter = getTenantEmployeeFilter(req.user);
+      const empWhere: any = { departmentId: departmentId as string, ...tenantFilter };
       if (designationId && designationId !== 'ALL') empWhere.designationId = designationId as string;
 
       const emps = await prisma.employee.findMany({

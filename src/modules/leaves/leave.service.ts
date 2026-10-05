@@ -1,4 +1,5 @@
 import { prisma } from '../../lib/prisma';
+import { getTenantEmployeeFilter, getTenantLeaveTypeFilter, getTenantHolidayFilter } from '../../utils/tenantFilter';
 
 // Ensure default master leave types exist in database
 export const ensureDefaultLeaveTypes = async () => {
@@ -64,9 +65,10 @@ export const updateLeaveQuotas = async (data: any) => {
 };
 
 // Summary metrics for Employee or HR Admin
-export const getLeaveSummary = async (userId: string, role: string) => {
+export const getLeaveSummary = async (userContext: any, role: string) => {
   await ensureDefaultLeaveTypes();
   const normalizedRole = (role || '').toUpperCase().trim();
+  const userId = typeof userContext === 'string' ? userContext : userContext?.id || '';
 
   if (normalizedRole === 'EMPLOYEE' || normalizedRole === 'USER') {
     const employee = await prisma.employee.findUnique({
@@ -166,23 +168,24 @@ export const getLeaveSummary = async (userId: string, role: string) => {
       ]
     };
   } else {
+    const tenantFilter = getTenantEmployeeFilter(typeof userContext === 'string' ? { id: userContext, role } : userContext);
     const totalEmployees = await prisma.employee.count({
-      where: {
-        isDeleted: false,
-        NOT: [
-          { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
-          { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
-        ]
-      } as any
+      where: tenantFilter
     });
-    const pending = await prisma.leaveRequest.count({ where: { status: 'PENDING' } });
+    const pending = await prisma.leaveRequest.count({
+      where: {
+        status: 'PENDING',
+        employee: tenantFilter
+      }
+    });
     
     const now = new Date();
     const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const approvedThisMonth = await prisma.leaveRequest.count({
       where: {
         status: 'APPROVED',
-        updatedAt: { gte: firstDayOfMonth }
+        updatedAt: { gte: firstDayOfMonth },
+        employee: tenantFilter
       }
     });
 
@@ -195,7 +198,8 @@ export const getLeaveSummary = async (userId: string, role: string) => {
       where: {
         status: 'APPROVED',
         startDate: { lte: tomorrow },
-        endDate: { gte: today }
+        endDate: { gte: today },
+        employee: tenantFilter
       }
     });
 
@@ -231,16 +235,24 @@ export const getLeaveSummary = async (userId: string, role: string) => {
 };
 
 // Get Leave Requests with filters
-export const getLeaveRequests = async (userId: string, role: string, filters: any) => {
+export const getLeaveRequests = async (userContext: any, role: string, filters: any) => {
+  const userObj = typeof userContext === 'string' ? { id: userContext, role } : userContext;
+  const tenantFilter = getTenantEmployeeFilter(userObj);
   let whereClause: any = {};
   const normalizedRole = (role || '').toUpperCase().trim();
   
   if (normalizedRole === 'EMPLOYEE' || normalizedRole === 'USER') {
-    const employee = await prisma.employee.findUnique({ where: { userId } });
+    const employee = await prisma.employee.findUnique({ where: { userId: userObj?.id } });
     if (!employee) return []; // Return empty array if user has no employee profile
     whereClause.employeeId = employee.id;
-  } else if (filters.employeeId) {
-    whereClause.employeeId = filters.employeeId;
+  } else {
+    whereClause.employee = { ...tenantFilter };
+    if (filters.employeeId) {
+      whereClause.employeeId = filters.employeeId;
+    }
+    if (filters.departmentId && filters.departmentId !== 'ALL') {
+      whereClause.employee.departmentId = filters.departmentId;
+    }
   }
 
   if (filters.status && filters.status !== 'ALL') {
@@ -249,10 +261,6 @@ export const getLeaveRequests = async (userId: string, role: string, filters: an
 
   if (filters.leaveType && filters.leaveType !== 'ALL') {
     whereClause.leaveType = filters.leaveType;
-  }
-
-  if (filters.departmentId && filters.departmentId !== 'ALL') {
-    whereClause.employee = { departmentId: filters.departmentId };
   }
 
   const requests = await prisma.leaveRequest.findMany({
@@ -268,7 +276,8 @@ export const getLeaveRequests = async (userId: string, role: string, filters: an
           email: true,
           photo: true,
           department: { select: { id: true, name: true } },
-          designation: { select: { id: true, name: true } }
+          designation: { select: { id: true, name: true } },
+          shift: { select: { id: true, name: true, startTime: true, endTime: true } }
         }
       },
       approvalHistory: {
@@ -415,18 +424,29 @@ export const processLeaveApproval = async (userId: string, leaveId: string, acti
 };
 
 // MASTER LEAVE TYPES CRUD
-export const getLeaveTypes = async () => {
+export const getLeaveTypes = async (userContext?: any) => {
   await ensureDefaultLeaveTypes();
-  return await prisma.leaveType.findMany({ orderBy: { name: 'asc' } });
+  const tenantLeaveTypeFilter = await getTenantLeaveTypeFilter(userContext);
+  return await prisma.leaveType.findMany({
+    where: tenantLeaveTypeFilter,
+    orderBy: { name: 'asc' }
+  });
 };
 
 export const createLeaveType = async (userId: string, data: any) => {
   if (!data.name || !data.code) throw new Error("Leave type name and code are required");
   
+  const tenantLeaveTypeFilter = await getTenantLeaveTypeFilter({ id: userId });
   const existing = await prisma.leaveType.findFirst({
-    where: { OR: [{ name: data.name }, { code: data.code }] }
+    where: {
+      OR: [
+        { name: { equals: data.name.trim(), mode: 'insensitive' } },
+        { code: { equals: data.code.trim().toUpperCase(), mode: 'insensitive' } }
+      ],
+      ...tenantLeaveTypeFilter
+    }
   });
-  if (existing) throw new Error("A leave type with this name or code already exists");
+  if (existing) throw new Error("A leave type with this name or code already exists in your organization");
 
   const leaveType = await prisma.leaveType.create({
     data: {
@@ -441,7 +461,8 @@ export const createLeaveType = async (userId: string, data: any) => {
       maxCarryForward: Number(data.maxCarryForward || 0),
       encashmentEnabled: Boolean(data.encashmentEnabled),
       requiresApproval: data.requiresApproval !== undefined ? Boolean(data.requiresApproval) : true,
-      status: data.status !== undefined ? Boolean(data.status) : true
+      status: data.status !== undefined ? Boolean(data.status) : true,
+      createdById: userId || null
     }
   });
 
@@ -531,18 +552,30 @@ export const updateLeavePolicy = async (userId: string, id: string, data: any) =
 };
 
 // LEAVE BALANCES FOR HR ADMIN
-export const getAllEmployeeBalances = async (filters: any) => {
-  let where: any = {};
-  if (filters.search) {
-    where.OR = [
-      { firstName: { contains: filters.search, mode: 'insensitive' } },
-      { lastName: { contains: filters.search, mode: 'insensitive' } },
-      { employeeId: { contains: filters.search, mode: 'insensitive' } },
-      { email: { contains: filters.search, mode: 'insensitive' } }
+export const getAllEmployeeBalances = async (userContext: any, filters?: any) => {
+  const actualFilters = filters || (typeof userContext === 'object' && !userContext.id ? userContext : {});
+  const userObj = typeof userContext === 'object' && userContext?.id ? userContext : (typeof filters === 'object' && filters?.user ? filters.user : null);
+
+  const tenantFilter = getTenantEmployeeFilter(userObj);
+  let where: any = { ...tenantFilter };
+
+  if (actualFilters.search) {
+    const searchConds = [
+      { firstName: { contains: actualFilters.search, mode: 'insensitive' } },
+      { lastName: { contains: actualFilters.search, mode: 'insensitive' } },
+      { employeeId: { contains: actualFilters.search, mode: 'insensitive' } },
+      { email: { contains: actualFilters.search, mode: 'insensitive' } }
     ];
+    where = {
+      AND: [
+        { ...tenantFilter },
+        { OR: searchConds }
+      ]
+    };
   }
-  if (filters.departmentId && filters.departmentId !== 'ALL') {
-    where.departmentId = filters.departmentId;
+
+  if (actualFilters.departmentId && actualFilters.departmentId !== 'ALL') {
+    where.departmentId = actualFilters.departmentId;
   }
 
   const employees = await prisma.employee.findMany({
@@ -550,6 +583,7 @@ export const getAllEmployeeBalances = async (filters: any) => {
     include: {
       department: { select: { id: true, name: true } },
       designation: { select: { id: true, name: true } },
+      shift: { select: { id: true, name: true, startTime: true, endTime: true } },
       leaveBalance: true,
       leaveRequests: { where: { status: 'APPROVED' } }
     },
@@ -584,6 +618,8 @@ export const getAllEmployeeBalances = async (filters: any) => {
       photo: emp.photo,
       department: emp.department?.name || 'Unassigned',
       designation: emp.designation?.name || 'Unassigned',
+      shiftId: emp.shiftId || null,
+      shiftName: emp.shift?.name || 'General Day Shift',
       balances: {
         annual: { allocated: bal.annual || 18, used: usedAnnual, remaining: Math.max(0, (bal.annual || 18) - usedAnnual) },
         casual: { allocated: bal.casual || 8, used: usedCasual, remaining: Math.max(0, (bal.casual || 8) - usedCasual) },
@@ -686,9 +722,15 @@ export const getLeaveAnalytics = async () => {
   };
 };
 
-export const getLeaveCalendar = async () => {
+export const getLeaveCalendar = async (userContext?: any) => {
+  const tenantFilter = getTenantEmployeeFilter(userContext);
+  const tenantHolidayFilter = await getTenantHolidayFilter(userContext);
   const upcomingLeaves = await prisma.leaveRequest.findMany({
-    where: { status: 'APPROVED', startDate: { gte: new Date() } },
+    where: { 
+      status: 'APPROVED', 
+      startDate: { gte: new Date() },
+      employee: tenantFilter
+    },
     include: {
       employee: { select: { firstName: true, lastName: true, employeeId: true, photo: true, department: { select: { name: true } } } }
     },
@@ -697,7 +739,10 @@ export const getLeaveCalendar = async () => {
   });
 
   const holidays = await prisma.holiday.findMany({
-    where: { date: { gte: new Date() } },
+    where: {
+      date: { gte: new Date() },
+      ...tenantHolidayFilter
+    },
     take: 10,
     orderBy: { date: 'asc' }
   });

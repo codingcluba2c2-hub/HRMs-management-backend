@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import crypto from 'crypto';
 import ExcelJS from 'exceljs';
 import { ApiResponse } from '../../utils/ApiResponse';
+import { getTenantEmployeeFilter } from '../../utils/tenantFilter';
 import {
   REQUIRED_WORKING_MINUTES,
   HALF_DAY_THRESHOLD_MINUTES,
@@ -69,6 +70,7 @@ export const getOrCreateEmployeeForUser = async (userId: string) => {
   employee = await prisma.employee.create({
     data: {
       userId: user.id,
+      createdById: user.id,
       employeeId: employeeIdStr,
       firstName: user.firstName || "HR",
       lastName: user.lastName || "Admin",
@@ -620,7 +622,9 @@ export const endBreak = async (req: Request, res: Response) => {
 
 export const getAllRecords = async (req: Request, res: Response) => {
   try {
+    const tenantFilter = getTenantEmployeeFilter((req as any).user);
     const records = await prisma.attendanceRecord.findMany({
+      where: { employee: tenantFilter },
       include: { employee: { include: { shift: true } }, logs: true, breaks: true, shift: true },
       orderBy: { date: 'desc' }
     });
@@ -1169,19 +1173,17 @@ export const getAdminSummary = async (req: Request, res: Response) => {
   try {
     const { datePreset = 'TODAY', startDate, endDate, singleDate } = req.query as any;
     const { start, end } = getDateRangeByPreset(datePreset, startDate, endDate, singleDate);
+    const tenantFilter = getTenantEmployeeFilter((req as any).user);
 
     const totalEmployees = await prisma.employee.count({
-      where: {
-        isDeleted: false,
-        NOT: [
-          { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
-          { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
-        ]
-      } as any
+      where: tenantFilter
     });
 
     const rangeRecords = await prisma.attendanceRecord.findMany({
-      where: { date: { gte: start, lte: end } },
+      where: {
+        date: { gte: start, lte: end },
+        employee: tenantFilter
+      },
       include: {
         employee: { include: { department: true, designation: true, shift: true } },
         logs: true,
@@ -1246,19 +1248,23 @@ export const getAdminRecords = async (req: Request, res: Response) => {
     } = req.query as any;
 
     const { start, end } = getDateRangeByPreset(datePreset, startDate, endDate, singleDate);
+    const tenantFilter = getTenantEmployeeFilter((req as any).user);
 
     const whereClause: any = {
       date: {
         gte: start,
         lte: end
+      },
+      employee: {
+        ...tenantFilter
       }
     };
 
     if (departmentId && departmentId !== 'ALL') {
-      whereClause.employee = { ...whereClause.employee, departmentId };
+      whereClause.employee.departmentId = departmentId;
     }
     if (designationId && designationId !== 'ALL') {
-      whereClause.employee = { ...whereClause.employee, designationId };
+      whereClause.employee.designationId = designationId;
     }
     if (shiftId && shiftId !== 'ALL') {
       whereClause.shiftId = shiftId;

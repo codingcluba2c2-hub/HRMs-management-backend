@@ -7,6 +7,7 @@ import fs from 'fs';
 import ImageKit from 'imagekit';
 import { sendDocumentApprovalEmail } from '../../utils/mailer';
 import jwt from 'jsonwebtoken';
+import { getTenantDocumentTypeFilter, getTenantEmployeeFilter } from '../../utils/tenantFilter';
 
 const imagekit = new ImageKit({
   publicKey: process.env.IMAGEKIT_PUBLIC_KEY!,
@@ -33,7 +34,7 @@ export const uploadDocument = async (req: Request, res: Response) => {
 
     const { documentType, documentNumber, remarks, employeeId: bodyEmployeeId, category, expiryDate } = req.body;
 
-    if (bodyEmployeeId && (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'HR_ADMIN')) {
+    if (bodyEmployeeId && (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'HR_ADMIN' || normalizedRole === 'HR_MANAGER')) {
       const targetEmployee = await prisma.employee.findUnique({ where: { id: bodyEmployeeId } });
       if (!targetEmployee) {
         return res.status(404).json(new ApiResponse(false, "Target employee profile not found"));
@@ -97,7 +98,7 @@ export const uploadDocument = async (req: Request, res: Response) => {
         action: "UPLOADED",
         ipAddress: req.ip || '',
         browser: req.headers['user-agent'] || '',
-        device: 'Desktop' // Mock device
+        device: 'Desktop'
       }
     });
 
@@ -114,7 +115,7 @@ export const uploadDocument = async (req: Request, res: Response) => {
     });
 
     // Mask for employee
-    if (normalizedRole !== 'SUPER_ADMIN' && normalizedRole !== 'HR_ADMIN') {
+    if (normalizedRole !== 'SUPER_ADMIN' && normalizedRole !== 'HR_ADMIN' && normalizedRole !== 'HR_MANAGER') {
       document.encryptedDocumentNumber = maskSensitiveData(document.encryptedDocumentNumber);
       document.encryptedDocumentPath = 'HIDDEN';
     }
@@ -141,9 +142,25 @@ export const getDocuments = async (req: Request, res: Response) => {
     if (status && status !== 'ALL') whereClause.verificationStatus = status;
     if (documentType && documentType !== 'ALL') whereClause.documentType = documentType;
 
-    if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'HR_ADMIN') {
+    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
+
+    if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
       documents = await prisma.employeeDocument.findMany({
         where: whereClause,
+        include: { employee: true },
+        orderBy: { createdAt: 'desc' }
+      });
+      documents = documents.map(doc => ({
+        ...doc,
+        documentNumber: doc.encryptedDocumentNumber,
+        fileUrl: doc.encryptedDocumentPath
+      }));
+    } else if (normalizedRole === 'HR_ADMIN' || normalizedRole === 'HR_MANAGER') {
+      documents = await prisma.employeeDocument.findMany({
+        where: {
+          ...whereClause,
+          employee: tenantEmpFilter
+        },
         include: { employee: true },
         orderBy: { createdAt: 'desc' }
       });
@@ -192,7 +209,7 @@ export const getDocumentById = async (req: Request, res: Response) => {
     const roleObj = (req as any).user.role;
     const userRole = typeof roleObj === 'string' ? roleObj : roleObj?.name;
     const normalizedRole = userRole?.toUpperCase().replace(' ', '_');
-    if (normalizedRole !== 'SUPER_ADMIN' && normalizedRole !== 'HR_ADMIN') {
+    if (normalizedRole !== 'SUPER_ADMIN' && normalizedRole !== 'HR_ADMIN' && normalizedRole !== 'HR_MANAGER') {
       const employee = await prisma.employee.findUnique({ where: { userId } });
       if (document.employeeId !== employee?.id) {
         return res.status(403).json(new ApiResponse(false, "Unauthorized to view this document"));
@@ -300,14 +317,13 @@ export const generateDownloadUrl = async (req: Request, res: Response) => {
     const roleObj = (req as any).user.role;
     const userRole = typeof roleObj === 'string' ? roleObj : roleObj?.name;
     const normalizedRole = userRole?.toUpperCase().replace(' ', '_');
-    if (normalizedRole !== 'SUPER_ADMIN' && normalizedRole !== 'HR_ADMIN') {
+    if (normalizedRole !== 'SUPER_ADMIN' && normalizedRole !== 'HR_ADMIN' && normalizedRole !== 'HR_MANAGER') {
       const employee = await prisma.employee.findUnique({ where: { userId } });
       if (document.employeeId !== employee?.id) {
         return res.status(403).json(new ApiResponse(false, "Unauthorized"));
       }
     }
 
-    // Just return the Cloudinary URL directly instead of going through preview endpoint
     const downloadUrl = document.encryptedDocumentPath;
 
     await prisma.auditLog.create({
@@ -324,8 +340,6 @@ export const generateDownloadUrl = async (req: Request, res: Response) => {
 };
 
 export const previewDocument = async (req: Request, res: Response) => {
-  // Since we now return the Cloudinary URL directly, this endpoint might not be used.
-  // However, keeping it as a fallback redirect if old links exist.
   try {
     const { token } = req.params;
     if (!token) return res.status(400).send("Invalid request");
@@ -333,7 +347,6 @@ export const previewDocument = async (req: Request, res: Response) => {
     const decoded = jwt.verify(token, JWT_SECRET) as any;
     const filePath = decoded.path;
     
-    // Redirect to the Cloudinary URL
     return res.redirect(filePath);
   } catch (error: any) {
     return res.status(403).send("Link expired or invalid");
@@ -351,15 +364,13 @@ export const deleteDocument = async (req: Request, res: Response) => {
     const roleObj = (req as any).user.role;
     const userRole = typeof roleObj === 'string' ? roleObj : roleObj?.name;
     const normalizedRole = userRole?.toUpperCase().replace(' ', '_');
-    if (normalizedRole !== 'SUPER_ADMIN' && normalizedRole !== 'HR_ADMIN') {
+    if (normalizedRole !== 'SUPER_ADMIN' && normalizedRole !== 'HR_ADMIN' && normalizedRole !== 'HR_MANAGER') {
       const employee = await prisma.employee.findUnique({ where: { userId } });
       if (document.employeeId !== employee?.id) {
         return res.status(403).json(new ApiResponse(false, "Unauthorized"));
       }
     }
 
-    // Destroy the asset from ImageKit
-    // fileHash holds the fileId because we saved uploadResponse.fileId to fileHash during upload
     if (document.fileHash) {
       await imagekit.deleteFile(document.fileHash);
     }
@@ -381,19 +392,27 @@ export const deleteDocument = async (req: Request, res: Response) => {
 
 export const getDocumentTypes = async (req: Request, res: Response) => {
   try {
-    let types = await prisma.documentType.findMany({ orderBy: { name: 'asc' } });
+    const tenantDocTypeFilter = await getTenantDocumentTypeFilter((req as any).user);
+    let types = await prisma.documentType.findMany({
+      where: tenantDocTypeFilter,
+      orderBy: { name: 'asc' }
+    });
     
-    // Auto-seed predefined types if empty
-    if (types.length === 0) {
+    // Auto-seed predefined default system types if global database is completely empty
+    const globalCount = await prisma.documentType.count();
+    if (globalCount === 0) {
       const defaultTypes = [
         "Aadhaar Card", "PAN Card", "Passport", "Driving License", 
-        "10th Marksheet", "12th Marksheet", "Degree Certificate"
+        "10th Marksheet", "12th Marksheet", "Degree Certificate", "Offer Letter"
       ];
       await prisma.documentType.createMany({
-        data: defaultTypes.map(name => ({ name })),
+        data: defaultTypes.map(name => ({ name, createdById: null })),
         skipDuplicates: true
       });
-      types = await prisma.documentType.findMany({ orderBy: { name: 'asc' } });
+      types = await prisma.documentType.findMany({
+        where: tenantDocTypeFilter,
+        orderBy: { name: 'asc' }
+      });
     }
     
     return res.status(200).json(new ApiResponse(true, "Success", types));
@@ -405,13 +424,42 @@ export const getDocumentTypes = async (req: Request, res: Response) => {
 export const createDocumentType = async (req: Request, res: Response) => {
   try {
     const { name } = req.body;
-    if (!name) return res.status(400).json(new ApiResponse(false, "Name is required"));
-    
-    const existing = await prisma.documentType.findUnique({ where: { name } });
-    if (existing) return res.status(400).json(new ApiResponse(false, "Document type already exists"));
+    const userId = (req as any).user?.id;
 
-    const newType = await prisma.documentType.create({ data: { name } });
-    return res.status(201).json(new ApiResponse(true, "Document type created", newType));
+    if (!name || !name.trim()) {
+      return res.status(400).json(new ApiResponse(false, "Category Name is required"));
+    }
+    const formattedName = name.trim();
+
+    const tenantDocTypeFilter = await getTenantDocumentTypeFilter((req as any).user);
+    const existing = await prisma.documentType.findFirst({
+      where: {
+        name: { equals: formattedName, mode: 'insensitive' },
+        ...tenantDocTypeFilter
+      }
+    });
+
+    if (existing) {
+      return res.status(400).json(new ApiResponse(false, "Document category type with this name already exists in your organization"));
+    }
+
+    const newType = await prisma.documentType.create({
+      data: {
+        name: formattedName,
+        createdById: userId || null
+      }
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: userId || null,
+        action: "DOCUMENT_TYPE_CREATED",
+        entity: "DocumentType",
+        entityId: newType.id
+      }
+    }).catch(() => {});
+
+    return res.status(201).json(new ApiResponse(true, "Document category type created successfully", newType));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
   }
@@ -425,8 +473,13 @@ export const getDocumentSummary = async (req: Request, res: Response) => {
     const normalizedRole = userRole?.toUpperCase().replace(' ', '_');
 
     let whereClause: any = {};
+    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
 
-    if (normalizedRole !== 'SUPER_ADMIN' && normalizedRole !== 'HR_ADMIN') {
+    if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
+      // Super admin sees all
+    } else if (normalizedRole === 'HR_ADMIN' || normalizedRole === 'HR_MANAGER') {
+      whereClause.employee = tenantEmpFilter;
+    } else {
       const employee = await prisma.employee.findUnique({ where: { userId } });
       if (!employee) {
         const categories = ['IDENTITY', 'EMPLOYMENT', 'PAYROLL', 'BANK', 'EDUCATION', 'COMPLIANCE', 'MEDICAL'];
@@ -458,7 +511,6 @@ export const getDocumentSummary = async (req: Request, res: Response) => {
     const categories = ['IDENTITY', 'EMPLOYMENT', 'PAYROLL', 'BANK', 'EDUCATION', 'COMPLIANCE', 'MEDICAL'];
     const categoryMetrics = categories.map(cat => {
       const catDocs = allDocs.filter(d => d.category === cat);
-      // Mock completion logic: assume 2 docs per category for 100%
       const completion = Math.min(100, Math.round((catDocs.length / 2) * 100));
       return { category: cat, count: catDocs.length, completion };
     });

@@ -88,13 +88,15 @@ model User {
 
 model Department {
   id          String   @id @default(uuid())
-  name        String   @unique
-  code        String   @unique
+  name        String
+  code        String
   description String?
   status      Boolean  @default(true) // Active/Inactive
   
   managerId   String?
   manager     Employee? @relation("DepartmentManager", fields: [managerId], references: [id])
+
+  createdById String?   // Track HR Manager/creator user ID
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -107,12 +109,15 @@ model Department {
 model Designation {
   id           String   @id @default(uuid())
   name         String
-  code         String?  @unique
+  code         String?
   level        String   @default("Associate")
   description  String?
   status       Boolean  @default(true)
   departmentId String
   department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  createdById  String?  // Track HR Manager/creator user ID
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -207,13 +212,16 @@ model Employee {
 
 model Shift {
   id            String   @id @default(uuid())
-  name          String   @unique // e.g., Morning Shift
+  name          String
   startTime     String   // e.g., "09:00"
   endTime       String   // e.g., "18:00"
   graceTime     Int      @default(15) // In minutes
   breakDuration Int      @default(60) // Total allowed break duration in minutes
   weeklyOff     String[] // e.g., ["Saturday", "Sunday"]
   status        Boolean  @default(true)
+
+  createdById   String?  // Track creator user ID for tenant isolation
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -225,9 +233,12 @@ model Shift {
 model Holiday {
   id          String   @id @default(uuid())
   name        String
-  date        DateTime @unique
+  date        DateTime
   type        String   // NATIONAL, REGIONAL, RESTRICTED
   description String?
+
+  createdById String?  // Track creator user ID for tenant isolation
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
@@ -299,8 +310,8 @@ model LeaveBalance {
 
 model LeaveType {
   id                  String   @id @default(uuid())
-  name                String   @unique
-  code                String   @unique
+  name                String
+  code                String
   description         String?
   category            String   @default("PAID") // PAID, UNPAID
   isPaid              Boolean  @default(true)
@@ -311,6 +322,9 @@ model LeaveType {
   encashmentEnabled   Boolean  @default(false)
   requiresApproval    Boolean  @default(true)
   status              Boolean  @default(true)
+
+  createdById         String?  // Track creator user ID for tenant isolation
+
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
@@ -412,8 +426,11 @@ model PayrollQuery {
 
 model JobRole {
   id          String   @id @default(uuid())
-  title       String   @unique
+  title       String
   description String?
+
+  createdById String?  // Track creator user ID for tenant isolation
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
@@ -440,7 +457,8 @@ model Candidate {
 
 model DocumentType {
   id          String   @id @default(uuid())
-  name        String   @unique
+  name        String
+  createdById String?  // Track HR Manager/creator user ID for multi-tenant isolation
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

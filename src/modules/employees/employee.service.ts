@@ -106,18 +106,40 @@ export class EmployeeService {
 
         let departmentId = null;
         if (data.departmentName) {
-          let dept = await prisma.department.findFirst({ where: { name: { equals: data.departmentName, mode: 'insensitive' } } });
+          let dept = await prisma.department.findFirst({
+            where: {
+              ...(hrAdminId ? { createdById: hrAdminId } : {}),
+              name: { equals: data.departmentName, mode: 'insensitive' }
+            }
+          });
           if (!dept) {
-            dept = await prisma.department.create({ data: { name: data.departmentName, code: `DEPT-${Math.floor(100+Math.random()*900)}` } });
+            dept = await prisma.department.create({
+              data: {
+                name: data.departmentName,
+                code: `DEPT-${Math.floor(100+Math.random()*900)}`,
+                createdById: hrAdminId || null
+              }
+            });
           }
           departmentId = dept.id;
         }
 
         let designationId = null;
         if (data.designationName && departmentId) {
-          let desig = await prisma.designation.findFirst({ where: { name: { equals: data.designationName, mode: 'insensitive' }, departmentId } });
+          let desig = await prisma.designation.findFirst({
+            where: {
+              departmentId,
+              name: { equals: data.designationName, mode: 'insensitive' }
+            }
+          });
           if (!desig) {
-            desig = await prisma.designation.create({ data: { name: data.designationName, departmentId } });
+            desig = await prisma.designation.create({
+              data: {
+                name: data.designationName,
+                departmentId,
+                createdById: hrAdminId || null
+              }
+            });
           }
           designationId = desig.id;
         }
