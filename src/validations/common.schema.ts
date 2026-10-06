@@ -6,7 +6,7 @@ const phoneRegex = /^(\+91|91)?[6789]\d{9}$/;
 const aadhaarRegex = /^\d{12}$/;
 const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
 const passportRegex = /^[A-PR-WYa-pr-wy][1-9]\d\s?\d{4}[1-9]$/;
-const empIdRegex = /^EMP-\d+$/;
+const empIdRegex = /^[A-Za-z0-9_-]+$/;
 const otpRegex = /^\d{6}$/;
 
 /**
@@ -32,7 +32,7 @@ export const employeeNameValidation = z
   .trim()
   .min(2, 'Name must be at least 2 characters long')
   .max(50, 'Name cannot exceed 50 characters')
-  .regex(/^[a-zA-Z\s\'-]+$/, 'Name can only contain alphabets, spaces, apostrophes, and hyphens');
+  .regex(/^[a-zA-Z\s\'-.]+$/, 'Name can only contain alphabets, spaces, apostrophes, hyphens, and dots');
 
 /**
  * Common Email Validation
@@ -47,14 +47,14 @@ export const emailValidation = z
   .max(254, 'Email cannot exceed 254 characters');
 
 /**
- * Indian Phone Number Validation
+ * Phone Number Validation
  */
 export const phoneValidation = z
   .string({ required_error: 'Phone number is required' })
   .trim()
-  .transform(val => val.replace(/[\s-]/g, '')) // Remove spaces/hyphens
-  .refine((val) => phoneRegex.test(val), {
-    message: 'Invalid Indian phone number. Must be 10 digits or start with +91',
+  .transform(val => val.replace(/[\s-]/g, ''))
+  .refine((val) => !val || /^\+?\d{7,15}$/.test(val), {
+    message: 'Invalid phone number format',
   });
 
 /**
@@ -161,7 +161,25 @@ export const searchValidation = z
  */
 export const dateValidation = z
   .string({ required_error: 'Date is required' })
-  .transform((val) => val.split('T')[0])
+  .transform((val) => {
+    if (!val) return val;
+    const clean = val.trim().split('T')[0];
+    if (/^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/.test(clean)) {
+      const parts = clean.split(/[\/-]/);
+      const d = parts[0].padStart(2, '0');
+      const m = parts[1].padStart(2, '0');
+      const y = parts[2];
+      return `${y}-${m}-${d}`;
+    }
+    if (/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(clean)) {
+      const parts = clean.split('/');
+      const y = parts[0];
+      const m = parts[1].padStart(2, '0');
+      const d = parts[2].padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+    return clean;
+  })
   .pipe(
     z.string()
       .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')

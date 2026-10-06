@@ -84,7 +84,7 @@ export const getDesignations = async (req: Request, res: Response) => {
     const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
 
     const whereClause: any = { ...tenantDesigFilter };
-    if (departmentId && typeof departmentId === 'string') {
+    if (departmentId && typeof departmentId === 'string' && departmentId !== 'ALL' && departmentId !== 'all') {
       whereClause.departmentId = departmentId;
     }
     if (status !== undefined) {

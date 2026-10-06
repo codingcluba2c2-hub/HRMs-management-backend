@@ -162,33 +162,46 @@ const repairTenantData = async () => {
 };
 
 const startServer = async () => {
-  try {
-    await prisma.$connect();
-    console.log('✅ PostgreSQL Connected');
-    console.log('✅ Prisma Connected');
-    await repairTenantData();
-    
-    server.listen(PORT as number, '0.0.0.0', () => {
-      let localIp = 'localhost';
-      const interfaces = os.networkInterfaces();
-      for (const name of Object.keys(interfaces)) {
-        for (const iface of interfaces[name]!) {
-          if (iface.family === 'IPv4' && !iface.internal) {
-            localIp = iface.address;
+  const maxRetries = 5;
+  let attempt = 0;
+
+  while (attempt < maxRetries) {
+    try {
+      attempt++;
+      await prisma.$connect();
+      console.log('✅ PostgreSQL Connected');
+      console.log('✅ Prisma Connected');
+      await repairTenantData();
+      
+      server.listen(PORT as number, '0.0.0.0', () => {
+        let localIp = 'localhost';
+        const interfaces = os.networkInterfaces();
+        for (const name of Object.keys(interfaces)) {
+          for (const iface of interfaces[name]!) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+              localIp = iface.address;
+            }
           }
         }
-      }
 
-      console.log(`✅ Server Running on http://localhost:${PORT}`);
-      console.log(`⚡ Real-Time Socket.IO Server Ready on http://localhost:${PORT}`);
-      console.log('\n========================================================');
-      console.log(`⚙️ Backend API accessible on your network via:`);
-      console.log(`👉 http://${localIp}:${PORT}`);
-      console.log('========================================================\n');
-    });
-  } catch (error) {
-    console.error('❌ Failed to start server:', error);
-    process.exit(1);
+        console.log(`✅ Server Running on http://localhost:${PORT}`);
+        console.log(`⚡ Real-Time Socket.IO Server Ready on http://localhost:${PORT}`);
+        console.log('\n========================================================');
+        console.log(`⚙️ Backend API accessible on your network via:`);
+        console.log(`👉 http://${localIp}:${PORT}`);
+        console.log('========================================================\n');
+      });
+      break;
+    } catch (error) {
+      console.error(`⚠️ Connection attempt ${attempt}/${maxRetries} failed:`, error instanceof Error ? error.message : error);
+      if (attempt < maxRetries) {
+        console.log(`⏳ Retrying database connection in 3 seconds...`);
+        await new Promise((res) => setTimeout(res, 3000));
+      } else {
+        console.error('❌ Failed to start server after multiple attempts:', error);
+        process.exit(1);
+      }
+    }
   }
 };
 
