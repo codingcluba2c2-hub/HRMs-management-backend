@@ -1,19 +1,22 @@
 import { prisma } from '../../lib/prisma';
-import { getTenantEmployeeFilter, getTenantLeaveTypeFilter, getTenantHolidayFilter } from '../../utils/tenantFilter';
+import { getTenantEmployeeFilter, getTenantLeaveTypeFilter, getTenantHolidayFilter, getTenantCreatorId } from '../../utils/tenantFilter';
 
 // Ensure default master leave types exist in database
 export const ensureDefaultLeaveTypes = async () => {
-  const count = await prisma.leaveType.count();
-  if (count === 0) {
-    const defaults = [
-      { name: 'Annual Leave', code: 'AL', description: 'Standard paid annual vacation leave', category: 'PAID', isPaid: true, defaultAllocation: 18, accrualType: 'ANNUAL', carryForwardEnabled: true, maxCarryForward: 10, encashmentEnabled: true, requiresApproval: true, status: true },
-      { name: 'Casual Leave', code: 'CL', description: 'Short term casual leave for urgent personal matters', category: 'PAID', isPaid: true, defaultAllocation: 8, accrualType: 'ANNUAL', carryForwardEnabled: false, maxCarryForward: 0, encashmentEnabled: false, requiresApproval: true, status: true },
-      { name: 'Medical Leave', code: 'ML', description: 'Sick and medical leave with medical certificate requirement', category: 'PAID', isPaid: true, defaultAllocation: 10, accrualType: 'ANNUAL', carryForwardEnabled: false, maxCarryForward: 0, encashmentEnabled: false, requiresApproval: true, status: true },
-      { name: 'Earned Leave', code: 'EL', description: 'Privilege or earned leave accrued monthly', category: 'PAID', isPaid: true, defaultAllocation: 5, accrualType: 'MONTHLY', carryForwardEnabled: true, maxCarryForward: 30, encashmentEnabled: true, requiresApproval: true, status: true },
-      { name: 'Comp Off', code: 'CO', description: 'Compensatory off for working on weekends or holidays', category: 'PAID', isPaid: true, defaultAllocation: 0, accrualType: 'CUSTOM', carryForwardEnabled: false, maxCarryForward: 0, encashmentEnabled: false, requiresApproval: true, status: true },
-      { name: 'Maternity Leave', code: 'MAT', description: 'Maternity leave for female employees as per statutory norms', category: 'PAID', isPaid: true, defaultAllocation: 180, accrualType: 'ANNUAL', carryForwardEnabled: false, maxCarryForward: 0, encashmentEnabled: false, requiresApproval: true, status: true },
-    ];
-    for (const item of defaults) {
+  const defaults = [
+    { name: 'Annual Leave', code: 'AL', description: 'Standard paid annual vacation leave', category: 'PAID', isPaid: true, defaultAllocation: 18, accrualType: 'ANNUAL', carryForwardEnabled: true, maxCarryForward: 10, encashmentEnabled: true, requiresApproval: true, status: true },
+    { name: 'Casual Leave', code: 'CL', description: 'Short term casual leave for urgent personal matters', category: 'PAID', isPaid: true, defaultAllocation: 8, accrualType: 'ANNUAL', carryForwardEnabled: false, maxCarryForward: 0, encashmentEnabled: false, requiresApproval: true, status: true },
+    { name: 'Medical Leave', code: 'ML', description: 'Sick and medical leave with medical certificate requirement', category: 'PAID', isPaid: true, defaultAllocation: 10, accrualType: 'ANNUAL', carryForwardEnabled: false, maxCarryForward: 0, encashmentEnabled: false, requiresApproval: true, status: true },
+    { name: 'Earned Leave', code: 'EL', description: 'Privilege or earned leave accrued monthly', category: 'PAID', isPaid: true, defaultAllocation: 5, accrualType: 'MONTHLY', carryForwardEnabled: true, maxCarryForward: 30, encashmentEnabled: true, requiresApproval: true, status: true },
+    { name: 'Comp Off', code: 'CO', description: 'Compensatory off for working on weekends or holidays', category: 'PAID', isPaid: true, defaultAllocation: 0, accrualType: 'CUSTOM', carryForwardEnabled: false, maxCarryForward: 0, encashmentEnabled: false, requiresApproval: true, status: true },
+    { name: 'Maternity Leave', code: 'MAT', description: 'Maternity leave for female employees as per statutory norms', category: 'PAID', isPaid: true, defaultAllocation: 180, accrualType: 'ANNUAL', carryForwardEnabled: false, maxCarryForward: 0, encashmentEnabled: false, requiresApproval: true, status: true },
+  ];
+
+  for (const item of defaults) {
+    const existing = await prisma.leaveType.findFirst({
+      where: { code: item.code, createdById: null }
+    });
+    if (!existing) {
       await prisma.leaveType.create({ data: item }).catch(() => {});
     }
   }
@@ -39,8 +42,8 @@ export const ensureDefaultLeaveTypes = async () => {
   }
 };
 
-export const getLeaveQuotas = async () => {
-  const types = await prisma.leaveType.findMany({ where: { status: true } });
+export const getLeaveQuotas = async (userContext?: any) => {
+  const types = await getLeaveTypes(userContext);
   return types.map(t => ({
     id: t.id,
     name: t.name,
@@ -50,18 +53,15 @@ export const getLeaveQuotas = async () => {
   }));
 };
 
-export const updateLeaveQuotas = async (data: any) => {
+export const updateLeaveQuotas = async (data: any, userContext?: any) => {
   if (Array.isArray(data)) {
     for (const item of data) {
       if (item.id) {
-        await prisma.leaveType.update({
-          where: { id: item.id },
-          data: { defaultAllocation: Number(item.defaultAllocation) || 0 }
-        }).catch(() => {});
+        await updateLeaveType(userContext, item.id, { defaultAllocation: Number(item.defaultAllocation) || 0 }).catch(() => {});
       }
     }
   }
-  return await getLeaveQuotas();
+  return await getLeaveQuotas(userContext);
 };
 
 // Summary metrics for Employee or HR Admin
@@ -203,10 +203,10 @@ export const getLeaveSummary = async (userContext: any, role: string) => {
       }
     });
 
-    const availableLeaveTypes = await prisma.leaveType.count({ where: { status: true } });
+    const availableLeaveTypes = (await getLeaveTypes(userContext)).length;
     const upcomingHolidays = await prisma.holiday.count({ where: { date: { gte: today } } });
 
-    const quotas = await getLeaveQuotas();
+    const quotas = await getLeaveQuotas(userContext);
 
     return {
       summary: {
@@ -423,38 +423,63 @@ export const processLeaveApproval = async (userId: string, leaveId: string, acti
   return request;
 };
 
-// MASTER LEAVE TYPES CRUD
+// MASTER LEAVE TYPES CRUD (Enterprise Copy-On-Write & Deduplication)
 export const getLeaveTypes = async (userContext?: any) => {
   await ensureDefaultLeaveTypes();
   const tenantLeaveTypeFilter = await getTenantLeaveTypeFilter(userContext);
-  return await prisma.leaveType.findMany({
+  const creatorId = await getTenantCreatorId(userContext);
+
+  const allTypes = await prisma.leaveType.findMany({
     where: tenantLeaveTypeFilter,
-    orderBy: { name: 'asc' }
+    orderBy: { createdAt: 'desc' }
   });
+
+  const mapByCode = new Map<string, typeof allTypes[0]>();
+
+  for (const item of allTypes) {
+    const codeKey = item.code.trim().toUpperCase();
+    const existing = mapByCode.get(codeKey);
+
+    if (!existing) {
+      mapByCode.set(codeKey, item);
+    } else {
+      if (item.createdById === creatorId && existing.createdById !== creatorId) {
+        mapByCode.set(codeKey, item);
+      }
+    }
+  }
+
+  const activeTypes = Array.from(mapByCode.values()).filter(item => item.status === true);
+  activeTypes.sort((a, b) => a.name.localeCompare(b.name));
+
+  return activeTypes;
 };
 
-export const createLeaveType = async (userId: string, data: any) => {
+export const createLeaveType = async (userContext: any, data: any) => {
   if (!data.name || !data.code) throw new Error("Leave type name and code are required");
   
-  const tenantLeaveTypeFilter = await getTenantLeaveTypeFilter({ id: userId });
-  const existing = await prisma.leaveType.findFirst({
-    where: {
-      OR: [
-        { name: { equals: data.name.trim(), mode: 'insensitive' } },
-        { code: { equals: data.code.trim().toUpperCase(), mode: 'insensitive' } }
-      ],
-      ...tenantLeaveTypeFilter
-    }
-  });
-  if (existing) throw new Error("A leave type with this name or code already exists in your organization");
+  const creatorId = await getTenantCreatorId(userContext);
+  const codeUpper = data.code.trim().toUpperCase();
+  const nameTrimmed = data.name.trim();
+
+  const existingTypes = await getLeaveTypes(userContext);
+  const isDuplicate = existingTypes.some(
+    t => t.code.toUpperCase() === codeUpper || t.name.toLowerCase() === nameTrimmed.toLowerCase()
+  );
+
+  if (isDuplicate) {
+    throw new Error("A leave type with this name or code already exists in your organization");
+  }
+
+  const userId = typeof userContext === 'string' ? userContext : userContext?.id || userContext?.userId || creatorId;
 
   const leaveType = await prisma.leaveType.create({
     data: {
-      name: data.name.trim(),
-      code: data.code.trim().toUpperCase(),
+      name: nameTrimmed,
+      code: codeUpper,
       description: data.description?.trim() || null,
       category: data.category || 'PAID',
-      isPaid: data.isPaid !== undefined ? data.isPaid : true,
+      isPaid: data.isPaid !== undefined ? Boolean(data.isPaid) : true,
       defaultAllocation: Number(data.defaultAllocation || 12),
       accrualType: data.accrualType || 'ANNUAL',
       carryForwardEnabled: Boolean(data.carryForwardEnabled),
@@ -462,7 +487,7 @@ export const createLeaveType = async (userId: string, data: any) => {
       encashmentEnabled: Boolean(data.encashmentEnabled),
       requiresApproval: data.requiresApproval !== undefined ? Boolean(data.requiresApproval) : true,
       status: data.status !== undefined ? Boolean(data.status) : true,
-      createdById: userId || null
+      createdById: creatorId
     }
   });
 
@@ -473,40 +498,120 @@ export const createLeaveType = async (userId: string, data: any) => {
   return leaveType;
 };
 
-export const updateLeaveType = async (userId: string, id: string, data: any) => {
+export const updateLeaveType = async (userContext: any, id: string, data: any) => {
   const existing = await prisma.leaveType.findUnique({ where: { id } });
   if (!existing) throw new Error("Leave type not found");
 
+  const creatorId = await getTenantCreatorId(userContext);
+  const userId = typeof userContext === 'string' ? userContext : userContext?.id || userContext?.userId || creatorId;
+
+  let targetId = id;
+
+  if (!existing.createdById) {
+    const existingOverride = await prisma.leaveType.findFirst({
+      where: { code: existing.code, createdById: creatorId }
+    });
+
+    if (existingOverride) {
+      targetId = existingOverride.id;
+    } else {
+      const newOverride = await prisma.leaveType.create({
+        data: {
+          name: data.name ? data.name.trim() : existing.name,
+          code: data.code ? data.code.trim().toUpperCase() : existing.code,
+          description: data.description !== undefined ? (data.description?.trim() || null) : existing.description,
+          category: data.category !== undefined ? data.category : existing.category,
+          isPaid: data.isPaid !== undefined ? Boolean(data.isPaid) : existing.isPaid,
+          defaultAllocation: data.defaultAllocation !== undefined ? Number(data.defaultAllocation) : existing.defaultAllocation,
+          accrualType: data.accrualType !== undefined ? data.accrualType : existing.accrualType,
+          carryForwardEnabled: data.carryForwardEnabled !== undefined ? Boolean(data.carryForwardEnabled) : existing.carryForwardEnabled,
+          maxCarryForward: data.maxCarryForward !== undefined ? Number(data.maxCarryForward) : existing.maxCarryForward,
+          encashmentEnabled: data.encashmentEnabled !== undefined ? Boolean(data.encashmentEnabled) : existing.encashmentEnabled,
+          requiresApproval: data.requiresApproval !== undefined ? Boolean(data.requiresApproval) : existing.requiresApproval,
+          status: data.status !== undefined ? Boolean(data.status) : existing.status,
+          createdById: creatorId
+        }
+      });
+
+      await prisma.auditLog.create({
+        data: { userId, action: 'LEAVE_TYPE_UPDATED', entity: 'LeaveType', entityId: newOverride.id }
+      }).catch(() => {});
+
+      return newOverride;
+    }
+  }
+
   const updated = await prisma.leaveType.update({
-    where: { id },
+    where: { id: targetId },
     data: {
-      name: data.name ? data.name.trim() : existing.name,
-      code: data.code ? data.code.trim().toUpperCase() : existing.code,
-      description: data.description !== undefined ? (data.description?.trim() || null) : existing.description,
-      category: data.category !== undefined ? data.category : existing.category,
-      isPaid: data.isPaid !== undefined ? data.isPaid : existing.isPaid,
-      defaultAllocation: data.defaultAllocation !== undefined ? Number(data.defaultAllocation) : existing.defaultAllocation,
-      accrualType: data.accrualType !== undefined ? data.accrualType : existing.accrualType,
-      carryForwardEnabled: data.carryForwardEnabled !== undefined ? Boolean(data.carryForwardEnabled) : existing.carryForwardEnabled,
-      maxCarryForward: data.maxCarryForward !== undefined ? Number(data.maxCarryForward) : existing.maxCarryForward,
-      encashmentEnabled: data.encashmentEnabled !== undefined ? Boolean(data.encashmentEnabled) : existing.encashmentEnabled,
-      requiresApproval: data.requiresApproval !== undefined ? Boolean(data.requiresApproval) : existing.requiresApproval,
-      status: data.status !== undefined ? Boolean(data.status) : existing.status
+      name: data.name ? data.name.trim() : undefined,
+      code: data.code ? data.code.trim().toUpperCase() : undefined,
+      description: data.description !== undefined ? (data.description?.trim() || null) : undefined,
+      category: data.category !== undefined ? data.category : undefined,
+      isPaid: data.isPaid !== undefined ? Boolean(data.isPaid) : undefined,
+      defaultAllocation: data.defaultAllocation !== undefined ? Number(data.defaultAllocation) : undefined,
+      accrualType: data.accrualType !== undefined ? data.accrualType : undefined,
+      carryForwardEnabled: data.carryForwardEnabled !== undefined ? Boolean(data.carryForwardEnabled) : undefined,
+      maxCarryForward: data.maxCarryForward !== undefined ? Number(data.maxCarryForward) : undefined,
+      encashmentEnabled: data.encashmentEnabled !== undefined ? Boolean(data.encashmentEnabled) : undefined,
+      requiresApproval: data.requiresApproval !== undefined ? Boolean(data.requiresApproval) : undefined,
+      status: data.status !== undefined ? Boolean(data.status) : undefined
     }
   });
 
   await prisma.auditLog.create({
-    data: { userId, action: 'LEAVE_TYPE_UPDATED', entity: 'LeaveType', entityId: id }
+    data: { userId, action: 'LEAVE_TYPE_UPDATED', entity: 'LeaveType', entityId: targetId }
   }).catch(() => {});
 
   return updated;
 };
 
-export const deleteLeaveType = async (userId: string, id: string) => {
+export const deleteLeaveType = async (userContext: any, id: string) => {
   const existing = await prisma.leaveType.findUnique({ where: { id } });
   if (!existing) throw new Error("Leave type not found");
 
-  // Deactivate instead of hard delete to preserve historical records
+  const creatorId = await getTenantCreatorId(userContext);
+  const userId = typeof userContext === 'string' ? userContext : userContext?.id || userContext?.userId || creatorId;
+
+  if (!existing.createdById) {
+    const existingOverride = await prisma.leaveType.findFirst({
+      where: { code: existing.code, createdById: creatorId }
+    });
+
+    if (existingOverride) {
+      const deactivated = await prisma.leaveType.update({
+        where: { id: existingOverride.id },
+        data: { status: false }
+      });
+      await prisma.auditLog.create({
+        data: { userId, action: 'LEAVE_TYPE_DEACTIVATED', entity: 'LeaveType', entityId: existingOverride.id }
+      }).catch(() => {});
+      return deactivated;
+    } else {
+      const deactivated = await prisma.leaveType.create({
+        data: {
+          name: existing.name,
+          code: existing.code,
+          description: existing.description,
+          category: existing.category,
+          isPaid: existing.isPaid,
+          defaultAllocation: existing.defaultAllocation,
+          accrualType: existing.accrualType,
+          carryForwardEnabled: existing.carryForwardEnabled,
+          maxCarryForward: existing.maxCarryForward,
+          encashmentEnabled: existing.encashmentEnabled,
+          requiresApproval: existing.requiresApproval,
+          createdById: creatorId,
+          status: false
+        }
+      });
+      await prisma.auditLog.create({
+        data: { userId, action: 'LEAVE_TYPE_DEACTIVATED', entity: 'LeaveType', entityId: deactivated.id }
+      }).catch(() => {});
+      return deactivated;
+    }
+  }
+
   const deactivated = await prisma.leaveType.update({
     where: { id },
     data: { status: false }

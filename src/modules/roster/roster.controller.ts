@@ -6,6 +6,7 @@ import ExcelJS from 'exceljs';
 import { emitRosterEvent } from '../../lib/socket';
 import { invalidateCachePattern } from '../../lib/redis';
 import { getTenantEmployeeFilter } from '../../utils/tenantFilter';
+import { getOrCreateEmployeeForUser } from '../../utils/employeeUtils';
 
 /**
  * Helper to normalize date to YYYY-MM-DD 00:00:00 UTC
@@ -76,20 +77,19 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
   try {
     const { departmentId, designationId, weekStart: weekStartParam } = req.query;
 
-    if (!departmentId || departmentId === 'ALL') {
-      return res.status(400).json(new ApiResponse(false, 'Department selection is required to load roster'));
-    }
-
     const { weekStart, weekEnd, days } = getWeekRange(weekStartParam as string);
 
     // Fetch department details
-    const department = await prisma.department.findUnique({
-      where: { id: departmentId as string },
-      select: { id: true, name: true, code: true }
-    });
+    let department: any = null;
+    if (departmentId && departmentId !== 'ALL') {
+      department = await prisma.department.findUnique({
+        where: { id: departmentId as string },
+        select: { id: true, name: true, code: true }
+      });
+    }
 
     if (!department) {
-      return res.status(404).json(new ApiResponse(false, 'Department not found'));
+      department = { id: 'ALL', name: 'All Departments', code: 'ALL' };
     }
 
     // Build designation filter
@@ -98,15 +98,26 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
       targetDesignationId = designationId as string;
     }
 
-    // Fetch employees in department & designation
+    // Fetch employees for this tenant
     const tenantFilter = getTenantEmployeeFilter(req.user);
     const employeeWhere: any = {
-      departmentId: departmentId as string,
       status: 'ACTIVE',
-      ...tenantFilter
+      AND: [
+        tenantFilter
+      ]
     };
+
+    if (departmentId && departmentId !== 'ALL') {
+      employeeWhere.AND.push({
+        OR: [
+          { departmentId: departmentId as string },
+          { departmentId: null }
+        ]
+      });
+    }
+
     if (targetDesignationId) {
-      employeeWhere.designationId = targetDesignationId;
+      employeeWhere.AND.push({ designationId: targetDesignationId });
     }
 
     const employees = await prisma.employee.findMany({
@@ -1261,12 +1272,10 @@ export const getEmployeeSchedule = async (req: AuthRequest, res: Response) => {
     const userId = req.user?.id;
     const { date: dateParam } = req.query;
 
-    const employee = await prisma.employee.findFirst({
-      where: { userId },
-      include: {
-        shift: { select: { name: true, startTime: true, endTime: true, weeklyOff: true, graceTime: true, breakDuration: true } }
-      }
-    });
+    if (!userId) {
+      return res.status(401).json(new ApiResponse(false, 'Unauthorized'));
+    }
+    const employee = await getOrCreateEmployeeForUser(userId);
 
     if (!employee) {
       return res.status(404).json(new ApiResponse(false, 'Employee profile not found for user'));

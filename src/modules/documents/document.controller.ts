@@ -8,6 +8,7 @@ import ImageKit from 'imagekit';
 import { sendDocumentApprovalEmail } from '../../utils/mailer';
 import jwt from 'jsonwebtoken';
 import { getTenantDocumentTypeFilter, getTenantEmployeeFilter } from '../../utils/tenantFilter';
+import { getOrCreateEmployeeForUser } from '../../utils/employeeUtils';
 
 const imagekit = new ImageKit({
   publicKey: process.env.IMAGEKIT_PUBLIC_KEY!,
@@ -41,7 +42,7 @@ export const uploadDocument = async (req: Request, res: Response) => {
       }
       employeeIdToUse = targetEmployee.id;
     } else {
-      const employee = await prisma.employee.findUnique({ where: { userId } });
+      const employee = await getOrCreateEmployeeForUser(userId);
       if (!employee) {
         return res.status(404).json(new ApiResponse(false, "Employee profile not found"));
       }

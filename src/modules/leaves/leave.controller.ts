@@ -72,7 +72,7 @@ export const getLeaveTypes = async (req: AuthRequest, res: Response) => {
 
 export const createLeaveType = async (req: AuthRequest, res: Response) => {
   try {
-    const leaveType = await leaveService.createLeaveType(req.user?.id || '', req.body);
+    const leaveType = await leaveService.createLeaveType(req.user, req.body);
     return res.status(201).json(new ApiResponse(true, "Leave type created successfully", leaveType));
   } catch (error: any) {
     return res.status(400).json(new ApiResponse(false, error.message));
@@ -82,7 +82,7 @@ export const createLeaveType = async (req: AuthRequest, res: Response) => {
 export const updateLeaveType = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const leaveType = await leaveService.updateLeaveType(req.user?.id || '', id, req.body);
+    const leaveType = await leaveService.updateLeaveType(req.user, id, req.body);
     return res.status(200).json(new ApiResponse(true, "Leave type updated successfully", leaveType));
   } catch (error: any) {
     return res.status(400).json(new ApiResponse(false, error.message));
@@ -92,7 +92,7 @@ export const updateLeaveType = async (req: AuthRequest, res: Response) => {
 export const deleteLeaveType = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const deactivated = await leaveService.deleteLeaveType(req.user?.id || '', id);
+    const deactivated = await leaveService.deleteLeaveType(req.user, id);
     return res.status(200).json(new ApiResponse(true, "Leave type deactivated successfully", deactivated));
   } catch (error: any) {
     return res.status(400).json(new ApiResponse(false, error.message));
@@ -171,7 +171,7 @@ export const getLeaveCalendar = async (req: AuthRequest, res: Response) => {
 
 export const getLeaveQuotas = async (req: AuthRequest, res: Response) => {
   try {
-    const quotas = await leaveService.getLeaveQuotas();
+    const quotas = await leaveService.getLeaveQuotas(req.user);
     return res.status(200).json(new ApiResponse(true, "Quotas fetched", quotas));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message || "Failed to fetch quotas"));
@@ -180,7 +180,7 @@ export const getLeaveQuotas = async (req: AuthRequest, res: Response) => {
 
 export const updateLeaveQuotas = async (req: AuthRequest, res: Response) => {
   try {
-    const quotas = await leaveService.updateLeaveQuotas(req.body);
+    const quotas = await leaveService.updateLeaveQuotas(req.body, req.user);
     return res.status(200).json(new ApiResponse(true, "Quotas updated", quotas));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message || "Failed to update quotas"));

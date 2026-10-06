@@ -18,81 +18,12 @@ const getTodayDate = () => {
   return d;
 };
 
-// Helper to resolve or automatically create Employee profile for authenticated User (including HR/Admin)
-export const getOrCreateEmployeeForUser = async (userId: string) => {
-  let employee = await prisma.employee.findUnique({
-    where: { userId },
-    include: { shift: true, department: true, designation: true }
-  });
-
-  if (employee) {
-    // Check if a published weekly roster entry overrides the default shift for today
-    const today = getTodayDate();
-    const rosterEntry = await prisma.rosterEntry.findFirst({
-      where: {
-        employeeId: employee.id,
-        date: today,
-        roster: { status: 'PUBLISHED' }
-      },
-      include: { shift: true }
-    });
-
-    if (rosterEntry && rosterEntry.shift) {
-      employee.shift = rosterEntry.shift;
-    }
-
-    return employee;
-  }
-
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user) return null;
-
-  employee = await prisma.employee.findUnique({
-    where: { email: user.email },
-    include: { shift: true, department: true, designation: true }
-  });
-
-  if (employee) {
-    employee = await prisma.employee.update({
-      where: { id: employee.id },
-      data: { userId: user.id },
-      include: { shift: true, department: true, designation: true }
-    });
-    return employee;
-  }
-
-  const activeShift = await prisma.shift.findFirst({ where: { status: true } });
-  const activeDept = await prisma.department.findFirst({ where: { status: true } });
-
-  const empIdNum = Math.floor(1000 + Math.random() * 9000);
-  const employeeIdStr = `EMP-HR-${empIdNum}`;
-
-  employee = await prisma.employee.create({
-    data: {
-      userId: user.id,
-      createdById: user.id,
-      employeeId: employeeIdStr,
-      firstName: user.firstName || "HR",
-      lastName: user.lastName || "Admin",
-      email: user.email,
-      phone: user.phone || null,
-      photo: user.profilePic || null,
-      joiningDate: user.createdAt || new Date(),
-      departmentId: activeDept?.id || undefined,
-      shiftId: activeShift?.id || undefined,
-      status: "ACTIVE"
-    },
-    include: { shift: true, department: true, designation: true }
-  });
-
-  return employee;
-};
+import { getOrCreateEmployeeForUser } from '../../utils/employeeUtils';
 
 // Get current attendance status for the logged-in user
 export const getStatus = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user.id;
-    const employee = await getOrCreateEmployeeForUser(userId);
+    const employee = await getOrCreateEmployeeForUser((req as any).user);
     if (!employee) return res.status(404).json(new ApiResponse(false, "Employee profile not found"));
 
     // First search for ANY active open attendance log across all records for this employee
@@ -255,10 +186,9 @@ export const getStatus = async (req: Request, res: Response) => {
 
 export const punchIn = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user.id;
     const { ipAddress, gpsLocation, deviceName, browser, os } = req.body;
     
-    const employee = await getOrCreateEmployeeForUser(userId);
+    const employee = await getOrCreateEmployeeForUser((req as any).user);
     if (!employee) return res.status(404).json(new ApiResponse(false, "Employee profile not found"));
 
     // Check if employee already has an active open session across ANY record
@@ -1244,42 +1174,45 @@ export const getAdminRecords = async (req: Request, res: Response) => {
       status = 'ALL',
       breakType = 'ALL',
       page = 1,
-      limit = 25
+      limit = 50
     } = req.query as any;
 
     const { start, end } = getDateRangeByPreset(datePreset, startDate, endDate, singleDate);
     const tenantFilter = getTenantEmployeeFilter((req as any).user);
 
-    const whereClause: any = {
-      date: {
-        gte: start,
-        lte: end
-      },
-      employee: {
-        ...tenantFilter
-      }
-    };
-
+    // 1. Fetch all matching tenant employees
+    const empWhere: any = { ...tenantFilter };
     if (departmentId && departmentId !== 'ALL') {
-      whereClause.employee.departmentId = departmentId;
+      empWhere.departmentId = departmentId;
     }
     if (designationId && designationId !== 'ALL') {
-      whereClause.employee.designationId = designationId;
-    }
-    if (shiftId && shiftId !== 'ALL') {
-      whereClause.shiftId = shiftId;
+      empWhere.designationId = designationId;
     }
     if (search && search.trim()) {
-      const query = search.trim();
-      whereClause.employee = {
-        ...whereClause.employee,
-        OR: [
-          { firstName: { contains: query, mode: 'insensitive' } },
-          { lastName: { contains: query, mode: 'insensitive' } },
-          { employeeId: { contains: query, mode: 'insensitive' } },
-          { email: { contains: query, mode: 'insensitive' } }
-        ]
-      };
+      const q = search.trim();
+      empWhere.OR = [
+        { firstName: { contains: q, mode: 'insensitive' } },
+        { lastName: { contains: q, mode: 'insensitive' } },
+        { employeeId: { contains: q, mode: 'insensitive' } },
+        { email: { contains: q, mode: 'insensitive' } }
+      ];
+    }
+
+    const tenantEmployees = await prisma.employee.findMany({
+      where: empWhere,
+      include: { department: true, designation: true, shift: true }
+    });
+
+    const tenantEmpMap = new Map(tenantEmployees.map(e => [e.id, e]));
+    const tenantEmpIds = Array.from(tenantEmpMap.keys());
+
+    // 2. Fetch existing AttendanceRecords in date range for these employees
+    const whereClause: any = {
+      date: { gte: start, lte: end },
+      employeeId: { in: tenantEmpIds }
+    };
+    if (shiftId && shiftId !== 'ALL') {
+      whereClause.shiftId = shiftId;
     }
 
     const records = await prisma.attendanceRecord.findMany({
@@ -1297,16 +1230,89 @@ export const getAdminRecords = async (req: Request, res: Response) => {
 
     let dtos = records.map(processAttendanceRecordDto);
 
-    // Apply status filter post-calculation (since status can be dynamic like Currently Working/On Break)
+    // 3. For single-day views (e.g. TODAY), generate virtual ABSENT records for employees without an AttendanceRecord
+    const isSingleDay = (start.getTime() === end.getTime() || (end.getTime() - start.getTime() <= 86400000 && start.getDate() === end.getDate()));
+    if (isSingleDay) {
+      const recordedEmpIds = new Set(records.map(r => r.employeeId));
+
+      for (const emp of tenantEmployees) {
+        if (!recordedEmpIds.has(emp.id)) {
+          // Check shift filter if applied
+          if (shiftId && shiftId !== 'ALL' && emp.shiftId !== shiftId) {
+            continue;
+          }
+
+          const targetDateStr = start.toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' });
+          
+          const absentDto = {
+            id: `absent-${emp.id}-${start.toISOString().split('T')[0]}`,
+            date: start,
+            dateFormatted: targetDateStr,
+            employeeId: emp.employeeId,
+            employee: {
+              id: emp.id,
+              firstName: emp.firstName,
+              lastName: emp.lastName,
+              employeeId: emp.employeeId,
+              email: emp.email,
+              avatar: emp.photo,
+              department: emp.department ? { id: emp.department.id, name: emp.department.name } : null,
+              designation: emp.designation ? { id: emp.designation.id, name: emp.designation.name } : null
+            },
+            status: 'Absent',
+            rawStatus: 'ABSENT',
+            punchIn: '—',
+            punchInTime: null,
+            punchOut: '—',
+            punchOutTime: null,
+            sessionEnded: '—',
+            sessionEndedMinutes: 0,
+            activeSession: null,
+            lunch: '—',
+            tea: '—',
+            bio: '—',
+            official: '—',
+            personal: '—',
+            breakTime: '0m',
+            totalBreakMinutes: 0,
+            workingHours: '0m',
+            effectiveMinutes: 0,
+            effectiveHoursDecimal: 0,
+            shift: emp.shift ? {
+              id: emp.shift.id,
+              name: emp.shift.name,
+              startTime: emp.shift.startTime,
+              endTime: emp.shift.endTime
+            } : null,
+            logs: [],
+            breaks: []
+          };
+
+          dtos.push(absentDto as any);
+        }
+      }
+    }
+
+    // Sort DTOs by status then employee name ascending
+    dtos.sort((a: any, b: any) => {
+      if (a.rawStatus === 'ABSENT' && b.rawStatus !== 'ABSENT') return 1;
+      if (a.rawStatus !== 'ABSENT' && b.rawStatus === 'ABSENT') return -1;
+      const nameA = `${a.employee?.firstName || ''} ${a.employee?.lastName || ''}`;
+      const nameB = `${b.employee?.firstName || ''} ${b.employee?.lastName || ''}`;
+      return nameA.localeCompare(nameB);
+    });
+
+    // Apply status filter
     if (status && status !== 'ALL') {
       dtos = dtos.filter(d => {
         if (status === 'CURRENTLY_WORKING' || status === 'YET_TO_CHECK_OUT') return d.rawStatus === 'YET_TO_CHECK_OUT';
         if (status === 'ON_BREAK') return d.rawStatus === 'ON_BREAK';
+        if (status === 'ABSENT') return d.rawStatus === 'ABSENT' || d.status === 'Absent';
         return d.rawStatus === status || d.status === status;
       });
     }
 
-    // Apply break type filter if requested
+    // Apply break type filter
     if (breakType && breakType !== 'ALL') {
       dtos = dtos.filter(d => {
         const cat = breakType.toUpperCase();
@@ -1321,7 +1327,7 @@ export const getAdminRecords = async (req: Request, res: Response) => {
 
     const totalRecords = dtos.length;
     const pageNum = parseInt(page as string, 10) || 1;
-    const limitNum = parseInt(limit as string, 10) || 25;
+    const limitNum = parseInt(limit as string, 10) || 50;
 
     const paginatedDtos = dtos.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
@@ -1331,7 +1337,7 @@ export const getAdminRecords = async (req: Request, res: Response) => {
         total: totalRecords,
         page: pageNum,
         limit: limitNum,
-        totalPages: Math.ceil(totalRecords / limitNum)
+        totalPages: Math.ceil(totalRecords / limitNum) || 1
       }
     }));
   } catch (error: any) {

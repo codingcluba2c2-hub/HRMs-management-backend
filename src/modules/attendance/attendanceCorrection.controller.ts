@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../../lib/prisma';
 import { ApiResponse } from '../../utils/ApiResponse';
+import { getOrCreateEmployeeForUser } from '../../utils/employeeUtils';
 
 // Create a new correction request
 export const createCorrection = async (req: Request, res: Response) => {
@@ -8,7 +9,7 @@ export const createCorrection = async (req: Request, res: Response) => {
     const userId = (req as any).user.id;
     const { date, requestedCheckIn, requestedCheckOut, correctionType, reason, attachmentUrl } = req.body;
 
-    const employee = await prisma.employee.findUnique({ where: { userId } });
+    const employee = await getOrCreateEmployeeForUser(userId);
     if (!employee) return res.status(404).json(new ApiResponse(false, "Employee profile not found"));
 
     // Check if an attendance record exists for this date
@@ -66,7 +67,7 @@ export const createCorrection = async (req: Request, res: Response) => {
 export const getMyCorrections = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const employee = await prisma.employee.findUnique({ where: { userId } });
+    const employee = await getOrCreateEmployeeForUser(userId);
     if (!employee) return res.status(404).json(new ApiResponse(false, "Employee profile not found"));
 
     const corrections = await prisma.attendanceCorrection.findMany({

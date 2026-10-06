@@ -6,6 +6,7 @@ import { prisma } from '../../lib/prisma';
 import bcrypt from 'bcryptjs';
 import { decrypt } from '../../utils/encryption';
 import { getTenantEmployeeFilter } from '../../utils/tenantFilter';
+import { getOrCreateEmployeeForUser } from '../../utils/employeeUtils';
 
 export const createEmployee = async (req: AuthRequest, res: Response) => {
   try {
@@ -146,6 +147,10 @@ export const getEmployees = async (req: AuthRequest, res: Response) => {
         }).catch(() => {});
       }
     }
+    if (req.user?.id) {
+      await getOrCreateEmployeeForUser(req.user.id);
+    }
+
     const tenantFilter = getTenantEmployeeFilter(req.user);
     let filter: any = { ...tenantFilter };
 

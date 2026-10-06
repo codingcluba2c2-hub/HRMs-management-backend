@@ -1,4 +1,5 @@
 import { prisma } from '../../lib/prisma';
+import { getOrCreateEmployeeForUser } from '../../utils/employeeUtils';
 
 import bcrypt from 'bcryptjs';
 import jwt, { SignOptions } from 'jsonwebtoken';
@@ -11,9 +12,7 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 
 const resolveUserCompanyName = async (user: any) => {
-  const employee = await prisma.employee.findFirst({
-    where: { OR: [{ userId: user.id }, { email: { equals: user.email, mode: 'insensitive' } }] }
-  });
+  const employee = await getOrCreateEmployeeForUser(user.id);
   if (employee && employee.createdById) {
     const creator = await prisma.user.findUnique({ where: { id: employee.createdById } });
     if (creator?.companyName) return creator.companyName;
