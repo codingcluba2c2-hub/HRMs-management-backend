@@ -85,13 +85,18 @@ export const getDesignations = async (req: Request, res: Response) => {
 
     const whereClause: any = { ...tenantDesigFilter };
     if (departmentId && typeof departmentId === 'string' && departmentId !== 'ALL' && departmentId !== 'all') {
-      whereClause.departmentId = departmentId;
+      whereClause.OR = [
+        { departmentId: departmentId },
+        { department: { id: departmentId } },
+        { department: { name: { equals: departmentId, mode: 'insensitive' } } },
+        { departmentId: null }
+      ];
     }
     if (status !== undefined) {
       whereClause.status = status === 'true';
     }
 
-    const designations = await prisma.designation.findMany({
+    let designations = await prisma.designation.findMany({
       where: whereClause,
       include: {
         department: {
@@ -103,6 +108,24 @@ export const getDesignations = async (req: Request, res: Response) => {
       },
       orderBy: [{ level: 'asc' }, { name: 'asc' }]
     });
+
+    // Fallback: If filtering by department returned no designations, fetch all active designations for the tenant
+    if (designations.length === 0 && departmentId && departmentId !== 'ALL' && departmentId !== 'all') {
+      const fallbackWhere: any = { ...tenantDesigFilter };
+      if (status !== undefined) fallbackWhere.status = status === 'true';
+      designations = await prisma.designation.findMany({
+        where: fallbackWhere,
+        include: {
+          department: {
+            select: { id: true, name: true, code: true }
+          },
+          _count: {
+            select: { employees: { where: tenantEmpFilter } }
+          }
+        },
+        orderBy: [{ level: 'asc' }, { name: 'asc' }]
+      });
+    }
 
     return res.status(200).json(new ApiResponse(true, 'Designations fetched successfully', designations));
   } catch (error: any) {

@@ -81,25 +81,59 @@ export const getTenantEmployees = async (req: Request, res: Response) => {
     const hrUserMap = new Map();
     hrUsers.forEach(u => hrUserMap.set(u.id, u));
 
+    // Build lookup of companyName -> Primary HR Admin User for that company
+    const companyAdminMap = new Map<string, any>();
+    const usersByCompany = new Map<string, any[]>();
+    
+    hrUsers.forEach(u => {
+      const comp = u.companyName || "Radical Minds Technologies Pvt. Ltd.";
+      if (!usersByCompany.has(comp)) {
+        usersByCompany.set(comp, []);
+      }
+      usersByCompany.get(comp)!.push(u);
+    });
+
+    for (const [compName, compUsers] of usersByCompany.entries()) {
+      // Find Primary HR Admin/Manager User for this company
+      let primaryAdmin = compUsers.find(u => {
+        const rName = (u.role?.name || '').toUpperCase();
+        return rName === 'HR_MANAGER' || rName === 'HR_ADMIN' || rName === 'TENANT_ADMIN' || rName === 'ADMIN' || rName.includes('HR');
+      });
+
+      if (!primaryAdmin) {
+        primaryAdmin = compUsers.find(u => (u.role?.name || '').toUpperCase() !== 'EMPLOYEE');
+      }
+
+      if (!primaryAdmin) {
+        primaryAdmin = compUsers[0];
+      }
+
+      if (primaryAdmin) {
+        companyAdminMap.set(compName, primaryAdmin);
+      }
+    }
+
     // Map each employee with tenant company info & creator HR head
     const enrichedEmployees = employees.map(emp => {
       const creator = emp.createdById ? hrUserMap.get(emp.createdById) : null;
       const userRec = emp.userId ? hrUserMap.get(emp.userId) : null;
 
-      const tenantCompany = creator?.companyName || userRec?.companyName || emp.user?.companyName || "Default Enterprise Tenant";
-      const tenantHead = creator ? `${creator.firstName} ${creator.lastName}` : "System Admin";
-      const creatorRole = creator?.role?.name || "HR_MANAGER";
+      const tenantCompany = creator?.companyName || userRec?.companyName || emp.user?.companyName || "Radical Minds Technologies Pvt. Ltd.";
+      const tenantAdmin = companyAdminMap.get(tenantCompany) || (creator?.role?.name !== 'EMPLOYEE' ? creator : null) || (userRec?.role?.name !== 'EMPLOYEE' ? userRec : null);
+      
+      const tenantHead = tenantAdmin ? `${tenantAdmin.firstName} ${tenantAdmin.lastName}` : (creator ? `${creator.firstName} ${creator.lastName}` : "System Admin");
+      const creatorRole = tenantAdmin?.role?.name || creator?.role?.name || "HR_MANAGER";
 
       return {
         ...emp,
         tenantCompany,
         tenantHead,
-        creatorId: creator?.id || null,
+        creatorId: tenantAdmin?.id || creator?.id || null,
         creatorRole,
-        creatorEmail: creator?.email || null,
-        creatorWebsite: creator?.companyWebsite || null,
-        creatorAddress: creator?.companyAddress || null,
-        creatorPhone: creator?.companyPhone || null
+        creatorEmail: tenantAdmin?.email || creator?.email || null,
+        creatorWebsite: tenantAdmin?.companyWebsite || creator?.companyWebsite || null,
+        creatorAddress: tenantAdmin?.companyAddress || creator?.companyAddress || null,
+        creatorPhone: tenantAdmin?.companyPhone || creator?.companyPhone || null
       };
     });
 
@@ -138,13 +172,15 @@ export const getTenantEmployees = async (req: Request, res: Response) => {
 
     enrichedEmployees.forEach(emp => {
       const comp = emp.tenantCompany;
+      const tenantAdmin = companyAdminMap.get(comp);
+
       if (!tenantTreeMap.has(comp)) {
         tenantTreeMap.set(comp, {
           companyName: comp,
-          headName: emp.tenantHead,
-          headEmail: emp.creatorEmail || '',
-          headRole: emp.creatorRole || 'Corporate Professional',
-          headId: emp.creatorId || null,
+          headName: tenantAdmin ? `${tenantAdmin.firstName} ${tenantAdmin.lastName}` : emp.tenantHead,
+          headEmail: tenantAdmin?.email || emp.creatorEmail || '',
+          headRole: tenantAdmin?.role?.name || emp.creatorRole || 'HR Manager',
+          headId: tenantAdmin?.id || emp.creatorId || null,
           count: 0,
           activeCount: 0,
           employees: []

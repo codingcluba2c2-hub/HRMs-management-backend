@@ -162,7 +162,7 @@ export const getLeaveAnalytics = async (req: AuthRequest, res: Response) => {
 
 export const getLeaveCalendar = async (req: AuthRequest, res: Response) => {
   try {
-    const calendar = await leaveService.getLeaveCalendar(req.user);
+    const calendar = await leaveService.getLeaveCalendar(req.user, req.query);
     return res.status(200).json(new ApiResponse(true, "Calendar fetched", calendar));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message || "Failed to fetch calendar"));

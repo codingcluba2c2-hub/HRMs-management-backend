@@ -671,8 +671,8 @@ model SystemMetric {
 
 model WeeklyRoster {
   id            String    @id @default(uuid())
-  departmentId  String
-  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  departmentId  String?
+  department    Department? @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   designationId String?
   designation   Designation? @relation(fields: [designationId], references: [id], onDelete: SetNull)
   

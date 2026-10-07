@@ -181,19 +181,27 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
       }
       const empLeaves = leaveMap.get(lr.employeeId)!;
 
-      let cur = new Date(lr.startDate);
-      const end = new Date(lr.endDate);
+      const startStr = lr.startDate instanceof Date ? lr.startDate.toISOString().split('T')[0] : String(lr.startDate).split('T')[0];
+      const endStr = lr.endDate instanceof Date ? lr.endDate.toISOString().split('T')[0] : String(lr.endDate).split('T')[0];
+
+      const [sY, sM, sD] = startStr.split('-').map(Number);
+      const [eY, eM, eD] = endStr.split('-').map(Number);
+
+      let cur = new Date(Date.UTC(sY, sM - 1, sD));
+      const end = new Date(Date.UTC(eY, eM - 1, eD));
+
       while (cur <= end) {
         const dateStr = cur.toISOString().split('T')[0];
         empLeaves.set(dateStr, lr);
-        cur.setDate(cur.getDate() + 1);
+        cur.setUTCDate(cur.getUTCDate() + 1);
       }
     });
 
     // Find existing WeeklyRoster
+    const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? (departmentId as string) : null;
     let roster = await prisma.weeklyRoster.findFirst({
       where: {
-        departmentId: departmentId as string,
+        departmentId: targetDepartmentId,
         designationId: targetDesignationId,
         weekStart: weekStart
       },
@@ -247,13 +255,20 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
 
         let type = 'SHIFT';
         let shiftId = emp.shiftId || (defaultShift ? defaultShift.id : null);
-        let shiftObj = emp.shift || defaultShift;
+        let shiftObj: any = emp.shift || defaultShift;
         let leaveType: string | null = null;
         let notes: string | null = null;
         let isOverridden = false;
         let overrideReason: string | null = null;
 
-        if (existingEntry) {
+        if (approvedLeave && (!existingEntry || !existingEntry.isOverridden)) {
+          type = 'LEAVE';
+          leaveType = approvedLeave.leaveType || 'APPROVED_LEAVE';
+          notes = approvedLeave.description || approvedLeave.reason || 'Approved Leave';
+          shiftId = null;
+          shiftObj = null;
+          isOverridden = false;
+        } else if (existingEntry) {
           type = existingEntry.type;
           shiftId = existingEntry.shiftId;
           shiftObj = existingEntry.shift || (shiftId ? shifts.find(s => s.id === shiftId) : null);
@@ -261,17 +276,18 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
           notes = existingEntry.notes;
           isOverridden = existingEntry.isOverridden;
           overrideReason = existingEntry.overrideReason;
-        } else if (approvedLeave) {
-          type = 'LEAVE';
-          leaveType = approvedLeave.leaveType || 'APPROVED_LEAVE';
         } else if (holiday) {
           type = 'HOLIDAY';
           notes = holiday.name;
+          shiftId = null;
+          shiftObj = null;
         } else {
           // Check employee default weekly off
           const empWeeklyOffs = emp.shift?.weeklyOff || defaultShift?.weeklyOff || ['Saturday', 'Sunday'];
           if (empWeeklyOffs.includes(dayOfWeekName)) {
             type = 'WEEK_OFF';
+            shiftId = null;
+            shiftObj = null;
           }
         }
 
@@ -385,12 +401,13 @@ export const saveDraft = async (req: AuthRequest, res: Response) => {
     }
 
     const { weekStart, weekEnd } = getWeekRange(weekStartParam);
+    const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? departmentId : null;
     const targetDesignationId = (designationId && designationId !== 'ALL') ? designationId : null;
 
     // Check if roster is LOCKED
     const existingRoster = await prisma.weeklyRoster.findFirst({
       where: {
-        departmentId,
+        departmentId: targetDepartmentId,
         designationId: targetDesignationId,
         weekStart
       }
@@ -409,7 +426,7 @@ export const saveDraft = async (req: AuthRequest, res: Response) => {
       }
     }) : await prisma.weeklyRoster.create({
       data: {
-        departmentId,
+        departmentId: targetDepartmentId,
         designationId: targetDesignationId,
         weekStart,
         weekEnd,
@@ -529,10 +546,11 @@ export const publishRoster = async (req: AuthRequest, res: Response) => {
       });
     } else if (departmentId && weekStartParam) {
       const { weekStart } = getWeekRange(weekStartParam);
+      const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? departmentId : null;
       const targetDesignationId = (designationId && designationId !== 'ALL') ? designationId : null;
       roster = await prisma.weeklyRoster.findFirst({
         where: {
-          departmentId,
+          departmentId: targetDepartmentId,
           designationId: targetDesignationId,
           weekStart
         },
@@ -549,6 +567,7 @@ export const publishRoster = async (req: AuthRequest, res: Response) => {
     }
 
     const newVersion = roster.version + 1;
+    const deptName = roster.department?.name || 'All Departments';
 
     // Transactional publish
     await prisma.$transaction(async (tx) => {
@@ -570,7 +589,7 @@ export const publishRoster = async (req: AuthRequest, res: Response) => {
           version: newVersion,
           snapshot: roster.entries,
           publishedById: req.user?.id,
-          changeSummary: `Published version v${newVersion} for ${roster.department.name}`
+          changeSummary: `Published version v${newVersion} for ${deptName}`
         }
       });
 
@@ -595,7 +614,7 @@ export const publishRoster = async (req: AuthRequest, res: Response) => {
         const notifications = usersToNotify.map(u => ({
           recipientId: u.id,
           title: 'Weekly Roster Published',
-          message: `Your weekly shift roster for ${roster.department.name} has been published. Check your schedule.`,
+          message: `Your weekly shift roster for ${deptName} has been published. Check your schedule.`,
           type: 'IN_APP',
           referenceId: roster.id
         }));
@@ -614,7 +633,7 @@ export const publishRoster = async (req: AuthRequest, res: Response) => {
       rosterId: roster.id,
       weekStart: roster.weekStart.toISOString().split('T')[0],
       title: '⚡ Weekly Shift Roster Published!',
-      message: `HR Manager published version v${newVersion} of your weekly roster for ${roster.department.name}.`,
+      message: `HR Manager published version v${newVersion} of your weekly roster for ${deptName}.`,
       updatedBy: req.user?.id,
       data: { version: newVersion }
     });
@@ -640,12 +659,13 @@ export const copyWeek = async (req: AuthRequest, res: Response) => {
 
     const sourceRange = getWeekRange(sourceWeekStart);
     const targetRange = getWeekRange(targetWeekStart);
+    const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? departmentId : null;
     const targetDesignationId = (designationId && designationId !== 'ALL') ? designationId : null;
 
     // Find source roster
     const sourceRoster = await prisma.weeklyRoster.findFirst({
       where: {
-        departmentId,
+        departmentId: targetDepartmentId,
         designationId: targetDesignationId,
         weekStart: sourceRange.weekStart
       },
@@ -659,7 +679,7 @@ export const copyWeek = async (req: AuthRequest, res: Response) => {
     // Upsert target WeeklyRoster
     let targetRoster = await prisma.weeklyRoster.findFirst({
       where: {
-        departmentId,
+        departmentId: targetDepartmentId,
         designationId: targetDesignationId,
         weekStart: targetRange.weekStart
       }
@@ -672,7 +692,7 @@ export const copyWeek = async (req: AuthRequest, res: Response) => {
     if (!targetRoster) {
       targetRoster = await prisma.weeklyRoster.create({
         data: {
-          departmentId,
+          departmentId: targetDepartmentId,
           designationId: targetDesignationId,
           weekStart: targetRange.weekStart,
           weekEnd: targetRange.weekEnd,
@@ -1092,6 +1112,7 @@ export const importXlsx = async (req: AuthRequest, res: Response) => {
     }
 
     const { weekStart, weekEnd, days } = getWeekRange(weekStartParam);
+    const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? departmentId : null;
     const targetDesignationId = (designationId && designationId !== 'ALL') ? designationId : null;
 
     // Read excel workbook from base64 buffer
@@ -1175,7 +1196,7 @@ export const importXlsx = async (req: AuthRequest, res: Response) => {
     // Upsert WeeklyRoster as DRAFT
     let roster = await prisma.weeklyRoster.findFirst({
       where: {
-        departmentId,
+        departmentId: targetDepartmentId,
         designationId: targetDesignationId,
         weekStart
       }
@@ -1188,7 +1209,7 @@ export const importXlsx = async (req: AuthRequest, res: Response) => {
     if (!roster) {
       roster = await prisma.weeklyRoster.create({
         data: {
-          departmentId,
+          departmentId: targetDepartmentId,
           designationId: targetDesignationId,
           weekStart,
           weekEnd,

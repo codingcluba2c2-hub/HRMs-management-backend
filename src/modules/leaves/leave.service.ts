@@ -253,6 +253,9 @@ export const getLeaveRequests = async (userContext: any, role: string, filters: 
     if (filters.departmentId && filters.departmentId !== 'ALL') {
       whereClause.employee.departmentId = filters.departmentId;
     }
+    if (filters.designationId && filters.designationId !== 'ALL') {
+      whereClause.employee.designationId = filters.designationId;
+    }
   }
 
   if (filters.status && filters.status !== 'ALL') {
@@ -322,6 +325,9 @@ export const createLeaveRequest = async (userId: string, data: any) => {
     throw new Error("You already have an active or pending leave request for the selected date range");
   }
 
+  const requestDescription = data.description || data.reason || null;
+  const requestAttachment = data.attachment || data.documentUrl || null;
+
   const request = await prisma.leaveRequest.create({
     data: {
       employeeId: empId,
@@ -331,8 +337,8 @@ export const createLeaveRequest = async (userId: string, data: any) => {
       halfDay: data.halfDay || false,
       workFromHome: data.workFromHome || false,
       emergencyLeave: data.emergencyLeave || false,
-      description: data.description,
-      attachment: data.attachment
+      description: requestDescription,
+      attachment: requestAttachment
     }
   });
 
@@ -342,7 +348,7 @@ export const createLeaveRequest = async (userId: string, data: any) => {
       leaveRequestId: request.id,
       action: 'SUBMITTED',
       actedById: userId,
-      comments: data.description || 'Leave request submitted by employee.'
+      comments: requestDescription || 'Leave request submitted by employee.'
     }
   }).catch(() => {});
 
@@ -387,6 +393,36 @@ export const processLeaveApproval = async (userId: string, leaveId: string, acti
         createdById: userId
       }
     }).catch(() => {});
+
+    // Sync roster entries for approved leave dates
+    try {
+      const startStr = request.startDate.toISOString().split('T')[0];
+      const endStr = request.endDate.toISOString().split('T')[0];
+      const [sY, sM, sD] = startStr.split('-').map(Number);
+      const [eY, eM, eD] = endStr.split('-').map(Number);
+
+      let cur = new Date(Date.UTC(sY, sM - 1, sD));
+      const endDateUtc = new Date(Date.UTC(eY, eM - 1, eD));
+
+      while (cur <= endDateUtc) {
+        const curDateCopy = new Date(cur);
+        await prisma.rosterEntry.updateMany({
+          where: {
+            employeeId: request.employeeId,
+            date: curDateCopy,
+            isOverridden: false
+          },
+          data: {
+            type: 'LEAVE',
+            leaveType: request.leaveType,
+            shiftId: null
+          }
+        });
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+    } catch (e) {
+      console.error('Failed to sync roster entries on leave approval:', e);
+    }
   } else if (action === 'CANCELLED' && existingRequest.status === 'APPROVED') {
     await prisma.leaveLedger.create({
       data: {
@@ -682,6 +718,9 @@ export const getAllEmployeeBalances = async (userContext: any, filters?: any) =>
   if (actualFilters.departmentId && actualFilters.departmentId !== 'ALL') {
     where.departmentId = actualFilters.departmentId;
   }
+  if (actualFilters.designationId && actualFilters.designationId !== 'ALL') {
+    where.designationId = actualFilters.designationId;
+  }
 
   const employees = await prisma.employee.findMany({
     where,
@@ -827,17 +866,26 @@ export const getLeaveAnalytics = async () => {
   };
 };
 
-export const getLeaveCalendar = async (userContext?: any) => {
+export const getLeaveCalendar = async (userContext?: any, filters?: any) => {
   const tenantFilter = getTenantEmployeeFilter(userContext);
   const tenantHolidayFilter = await getTenantHolidayFilter(userContext);
+
+  const empWhere: any = { ...tenantFilter };
+  if (filters?.departmentId && filters.departmentId !== 'ALL') {
+    empWhere.departmentId = filters.departmentId;
+  }
+  if (filters?.designationId && filters.designationId !== 'ALL') {
+    empWhere.designationId = filters.designationId;
+  }
+
   const upcomingLeaves = await prisma.leaveRequest.findMany({
     where: { 
       status: 'APPROVED', 
       startDate: { gte: new Date() },
-      employee: tenantFilter
+      employee: empWhere
     },
     include: {
-      employee: { select: { firstName: true, lastName: true, employeeId: true, photo: true, department: { select: { name: true } } } }
+      employee: { select: { firstName: true, lastName: true, employeeId: true, photo: true, department: { select: { name: true } }, designation: { select: { name: true } }, shift: { select: { name: true, startTime: true, endTime: true } } } }
     },
     take: 15,
     orderBy: { startDate: 'asc' }
