@@ -81,17 +81,23 @@ export const getDesignations = async (req: Request, res: Response) => {
   try {
     const { departmentId, status } = req.query;
     const tenantDesigFilter = await getTenantDesignationFilter((req as any).user);
-    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
 
-    const whereClause: any = { ...tenantDesigFilter };
+    const whereClause: any = {
+      AND: [
+        tenantDesigFilter
+      ]
+    };
+
     if (departmentId && typeof departmentId === 'string' && departmentId !== 'ALL' && departmentId !== 'all') {
-      whereClause.OR = [
-        { departmentId: departmentId },
-        { department: { id: departmentId } },
-        { department: { name: { equals: departmentId, mode: 'insensitive' } } },
-        { departmentId: null }
-      ];
+      whereClause.AND.push({
+        OR: [
+          { departmentId: departmentId },
+          { department: { id: departmentId } },
+          { department: { name: { equals: departmentId, mode: 'insensitive' } } }
+        ]
+      });
     }
+
     if (status !== undefined) {
       whereClause.status = status === 'true';
     }
@@ -103,7 +109,7 @@ export const getDesignations = async (req: Request, res: Response) => {
           select: { id: true, name: true, code: true }
         },
         _count: {
-          select: { employees: { where: tenantEmpFilter } }
+          select: { employees: true }
         }
       },
       orderBy: [{ level: 'asc' }, { name: 'asc' }]
@@ -111,7 +117,7 @@ export const getDesignations = async (req: Request, res: Response) => {
 
     // Fallback: If filtering by department returned no designations, fetch all active designations for the tenant
     if (designations.length === 0 && departmentId && departmentId !== 'ALL' && departmentId !== 'all') {
-      const fallbackWhere: any = { ...tenantDesigFilter };
+      const fallbackWhere: any = { AND: [tenantDesigFilter] };
       if (status !== undefined) fallbackWhere.status = status === 'true';
       designations = await prisma.designation.findMany({
         where: fallbackWhere,
@@ -120,7 +126,7 @@ export const getDesignations = async (req: Request, res: Response) => {
             select: { id: true, name: true, code: true }
           },
           _count: {
-            select: { employees: { where: tenantEmpFilter } }
+            select: { employees: true }
           }
         },
         orderBy: [{ level: 'asc' }, { name: 'asc' }]
@@ -129,6 +135,7 @@ export const getDesignations = async (req: Request, res: Response) => {
 
     return res.status(200).json(new ApiResponse(true, 'Designations fetched successfully', designations));
   } catch (error: any) {
+    console.error('Error fetching designations:', error);
     return res.status(500).json(new ApiResponse(false, error.message));
   }
 };

@@ -197,12 +197,11 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
       }
     });
 
-    // Find existing WeeklyRoster
+    // Find existing WeeklyRosters for this department & weekStart
     const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? (departmentId as string) : null;
-    let roster = await prisma.weeklyRoster.findFirst({
+    const rosters = await prisma.weeklyRoster.findMany({
       where: {
         departmentId: targetDepartmentId,
-        designationId: targetDesignationId,
         weekStart: weekStart
       },
       include: {
@@ -211,20 +210,25 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
             shift: { select: { id: true, name: true, startTime: true, endTime: true } }
           }
         }
-      }
+      },
+      orderBy: { updatedAt: 'desc' }
     });
 
-    // Map existing entries: employeeId -> dateStr -> entry
+    const roster = rosters.length > 0 ? rosters[0] : null;
+
+    // Map existing entries: employeeId -> dateStr -> entry across all rosters for this week
     const entryMap = new Map<string, Map<string, any>>();
-    if (roster) {
-      roster.entries.forEach(e => {
+    rosters.forEach(r => {
+      r.entries.forEach(e => {
         if (!entryMap.has(e.employeeId)) {
           entryMap.set(e.employeeId, new Map());
         }
         const dateStr = e.date.toISOString().split('T')[0];
-        entryMap.get(e.employeeId)!.set(dateStr, e);
+        if (!entryMap.get(e.employeeId)!.has(dateStr)) {
+          entryMap.get(e.employeeId)!.set(dateStr, e);
+        }
       });
-    }
+    });
 
     // Default general shift if available
     const defaultShift = shifts.find(s => s.name.toLowerCase().includes('general')) || shifts[0] || null;
@@ -402,15 +406,14 @@ export const saveDraft = async (req: AuthRequest, res: Response) => {
 
     const { weekStart, weekEnd } = getWeekRange(weekStartParam);
     const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? departmentId : null;
-    const targetDesignationId = (designationId && designationId !== 'ALL') ? designationId : null;
 
     // Check if roster is LOCKED
     const existingRoster = await prisma.weeklyRoster.findFirst({
       where: {
         departmentId: targetDepartmentId,
-        designationId: targetDesignationId,
         weekStart
-      }
+      },
+      orderBy: { updatedAt: 'desc' }
     });
 
     if (existingRoster?.status === 'LOCKED') {
@@ -427,7 +430,7 @@ export const saveDraft = async (req: AuthRequest, res: Response) => {
     }) : await prisma.weeklyRoster.create({
       data: {
         departmentId: targetDepartmentId,
-        designationId: targetDesignationId,
+        designationId: null,
         weekStart,
         weekEnd,
         status: 'DRAFT',
@@ -547,14 +550,13 @@ export const publishRoster = async (req: AuthRequest, res: Response) => {
     } else if (departmentId && weekStartParam) {
       const { weekStart } = getWeekRange(weekStartParam);
       const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? departmentId : null;
-      const targetDesignationId = (designationId && designationId !== 'ALL') ? designationId : null;
       roster = await prisma.weeklyRoster.findFirst({
         where: {
           departmentId: targetDepartmentId,
-          designationId: targetDesignationId,
           weekStart
         },
-        include: { entries: true, department: true }
+        include: { entries: true, department: true },
+        orderBy: { updatedAt: 'desc' }
       });
     }
 
@@ -666,10 +668,10 @@ export const copyWeek = async (req: AuthRequest, res: Response) => {
     const sourceRoster = await prisma.weeklyRoster.findFirst({
       where: {
         departmentId: targetDepartmentId,
-        designationId: targetDesignationId,
         weekStart: sourceRange.weekStart
       },
-      include: { entries: true }
+      include: { entries: true },
+      orderBy: { updatedAt: 'desc' }
     });
 
     if (!sourceRoster || sourceRoster.entries.length === 0) {
@@ -680,9 +682,9 @@ export const copyWeek = async (req: AuthRequest, res: Response) => {
     let targetRoster = await prisma.weeklyRoster.findFirst({
       where: {
         departmentId: targetDepartmentId,
-        designationId: targetDesignationId,
         weekStart: targetRange.weekStart
-      }
+      },
+      orderBy: { updatedAt: 'desc' }
     });
 
     if (targetRoster?.status === 'LOCKED') {
@@ -839,18 +841,22 @@ export const getAuditLogs = async (req: AuthRequest, res: Response) => {
  */
 export const exportXlsx = async (req: AuthRequest, res: Response) => {
   try {
-    const { departmentId, designationId, weekStart: weekStartParam } = req.body;
+    const { departmentId, designationId, shiftFilter, searchTerm, weekStart: weekStartParam } = req.body;
 
-    if (!departmentId || departmentId === 'ALL') {
-      return res.status(400).json(new ApiResponse(false, 'Department selection is required for export'));
+    if (!weekStartParam) {
+      return res.status(400).json(new ApiResponse(false, 'weekStart date parameter is required for export'));
     }
 
     const { weekStart, weekEnd, days } = getWeekRange(weekStartParam);
 
-    const department = await prisma.department.findUnique({
-      where: { id: departmentId },
-      select: { name: true, code: true }
-    });
+    let departmentName = 'All Departments';
+    if (departmentId && departmentId !== 'ALL') {
+      const department = await prisma.department.findUnique({
+        where: { id: departmentId },
+        select: { name: true, code: true }
+      });
+      if (department) departmentName = department.name;
+    }
 
     let designationName = 'All Designations';
     if (designationId && designationId !== 'ALL') {
@@ -861,15 +867,26 @@ export const exportXlsx = async (req: AuthRequest, res: Response) => {
     // Fetch employees & roster
     const tenantFilter = getTenantEmployeeFilter(req.user);
     const employeeWhere: any = {
-      departmentId,
       status: 'ACTIVE',
       ...tenantFilter
     };
+    if (departmentId && departmentId !== 'ALL') {
+      employeeWhere.departmentId = departmentId;
+    }
     if (designationId && designationId !== 'ALL') {
       employeeWhere.designationId = designationId;
     }
 
-    const employees = await prisma.employee.findMany({
+    if (searchTerm && typeof searchTerm === 'string' && searchTerm.trim()) {
+      const term = searchTerm.trim().toLowerCase();
+      employeeWhere.OR = [
+        { firstName: { contains: term, mode: 'insensitive' } },
+        { lastName: { contains: term, mode: 'insensitive' } },
+        { employeeId: { contains: term, mode: 'insensitive' } }
+      ];
+    }
+
+    let employees = await prisma.employee.findMany({
       where: employeeWhere,
       select: {
         id: true,
@@ -879,29 +896,57 @@ export const exportXlsx = async (req: AuthRequest, res: Response) => {
         email: true,
         department: { select: { name: true } },
         designation: { select: { name: true } },
-        shift: { select: { name: true, startTime: true, endTime: true, weeklyOff: true } }
+        shift: { select: { id: true, name: true, startTime: true, endTime: true, weeklyOff: true } }
       },
       orderBy: [{ firstName: 'asc' }]
     });
 
-    const roster = await prisma.weeklyRoster.findFirst({
+    const targetDeptId = (departmentId && departmentId !== 'ALL') ? departmentId : null;
+    const rosters = await prisma.weeklyRoster.findMany({
       where: {
-        departmentId,
-        designationId: (designationId && designationId !== 'ALL') ? designationId : null,
-        weekStart
+        weekStart,
+        ...(targetDeptId ? {
+          OR: [
+            { departmentId: targetDeptId },
+            { departmentId: null }
+          ]
+        } : {})
       },
       include: {
         entries: {
           include: { shift: { select: { name: true, startTime: true, endTime: true } } }
         }
-      }
+      },
+      orderBy: { updatedAt: 'desc' }
     });
 
+    const roster = rosters.length > 0 ? rosters[0] : null;
+
     const entryMap = new Map<string, Map<string, any>>();
-    if (roster) {
-      roster.entries.forEach(e => {
+    rosters.forEach(r => {
+      r.entries.forEach(e => {
         if (!entryMap.has(e.employeeId)) entryMap.set(e.employeeId, new Map());
-        entryMap.get(e.employeeId)!.set(e.date.toISOString().split('T')[0], e);
+        const dateStr = e.date.toISOString().split('T')[0];
+        if (!entryMap.get(e.employeeId)!.has(dateStr)) {
+          entryMap.get(e.employeeId)!.set(dateStr, e);
+        }
+      });
+    });
+
+    // Filter by shiftFilter if provided
+    if (shiftFilter && shiftFilter !== 'ALL') {
+      employees = employees.filter(emp => {
+        const empEntries = entryMap.get(emp.id);
+        if (shiftFilter === 'UNASSIGNED') {
+          return days.some(d => {
+            const entry = empEntries?.get(d);
+            return (!entry || entry.type === 'SHIFT') && !entry?.shiftId && !emp.shift;
+          });
+        }
+        return days.some(d => {
+          const entry = empEntries?.get(d);
+          return entry?.shiftId === shiftFilter || emp.shift?.id === shiftFilter;
+        });
       });
     }
 
@@ -913,18 +958,18 @@ export const exportXlsx = async (req: AuthRequest, res: Response) => {
     const sheet = workbook.addWorksheet('Workforce Weekly Roster');
 
     // Title & Header Information
-    sheet.mergeCells('A1:J1');
+    sheet.mergeCells('A1:L1');
     const titleCell = sheet.getCell('A1');
     titleCell.value = 'HRMS PRO — ENTERPRISE WORKFORCE WEEKLY ROSTER';
     titleCell.font = { name: 'Calibri', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
     titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
-    sheet.mergeCells('A2:J2');
+    sheet.mergeCells('A2:L2');
     const subTitleCell = sheet.getCell('A2');
     const startStr = weekStart.toISOString().split('T')[0];
     const endStr = weekEnd.toISOString().split('T')[0];
-    subTitleCell.value = `Department: ${department?.name || 'All'} | Designation: ${designationName} | Week: ${startStr} to ${endStr} | Status: ${roster?.status || 'DRAFT'}`;
+    subTitleCell.value = `Department: ${departmentName} | Designation: ${designationName} | Week: ${startStr} to ${endStr} | Status: ${roster?.status || 'DRAFT'}`;
     subTitleCell.font = { name: 'Calibri', size: 11, italic: true, color: { argb: 'FF475569' } };
     subTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
@@ -936,6 +981,7 @@ export const exportXlsx = async (req: AuthRequest, res: Response) => {
       'Employee Name',
       'Department',
       'Designation',
+      'Configured Week Off',
       ...days.map(d => {
         const dt = new Date(d + 'T00:00:00Z');
         const dayStr = dt.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }).toUpperCase();
@@ -961,6 +1007,21 @@ export const exportXlsx = async (req: AuthRequest, res: Response) => {
     // Populate Data Rows
     employees.forEach(emp => {
       const empEntries = entryMap.get(emp.id);
+
+      // Determine configured week off string
+      const weekOffFromEntries = days.filter(dateStr => {
+        const e = empEntries?.get(dateStr);
+        return e && e.type === 'WEEK_OFF';
+      }).map(dateStr => {
+        const dt = new Date(dateStr + 'T00:00:00Z');
+        return dt.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' });
+      });
+
+      let weekOffStr = weekOffFromEntries.join(', ');
+      if (!weekOffStr && emp.shift?.weeklyOff && Array.isArray(emp.shift.weeklyOff) && emp.shift.weeklyOff.length > 0) {
+        weekOffStr = emp.shift.weeklyOff.map((w: string) => w.substring(0, 3)).join(', ');
+      }
+      if (!weekOffStr) weekOffStr = 'Sun';
 
       const dayCells = days.map(dateStr => {
         const entry = empEntries?.get(dateStr);
@@ -990,12 +1051,13 @@ export const exportXlsx = async (req: AuthRequest, res: Response) => {
         `${emp.firstName} ${emp.lastName}`,
         emp.department?.name || '',
         emp.designation?.name || '',
+        weekOffStr,
         ...dayCells
       ]);
 
       row.height = 32;
       row.eachCell((cell, colIndex) => {
-        cell.alignment = { vertical: 'middle', wrapText: true, horizontal: colIndex > 4 ? 'center' : 'left' };
+        cell.alignment = { vertical: 'middle', wrapText: true, horizontal: colIndex > 5 ? 'center' : 'left' };
         cell.border = {
           top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
           left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
@@ -1027,10 +1089,11 @@ export const exportXlsx = async (req: AuthRequest, res: Response) => {
       else if (idx === 1) col.width = 24; // Name
       else if (idx === 2) col.width = 20; // Dept
       else if (idx === 3) col.width = 20; // Designation
+      else if (idx === 4) col.width = 20; // Configured Week Off
       else col.width = 18; // Days
     });
 
-    const safeDept = (department?.name || 'Department').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safeDept = (departmentName || 'Department').replace(/[^a-zA-Z0-9_-]/g, '_');
     const safeDesig = designationName.replace(/[^a-zA-Z0-9_-]/g, '_');
     const filename = `HRMS_Roster_${safeDept}_${safeDesig}_${startStr}.xlsx`;
 
@@ -1056,13 +1119,13 @@ export const downloadTemplate = async (req: AuthRequest, res: Response) => {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Roster Import Template');
 
-    sheet.mergeCells('A1:I1');
+    sheet.mergeCells('A1:L1');
     const titleCell = sheet.getCell('A1');
     titleCell.value = 'HRMS ROSTER IMPORT TEMPLATE — Fill Shift Name or OFF / LEAVE / WFH';
     titleCell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
     titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
 
-    const headers = ['Employee ID', 'Employee Name', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const headers = ['Employee ID', 'Employee Name', 'Department', 'Designation', 'Configured Week Off', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const hRow = sheet.addRow(headers);
     hRow.eachCell((c) => {
       c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
@@ -1076,15 +1139,23 @@ export const downloadTemplate = async (req: AuthRequest, res: Response) => {
 
       const emps = await prisma.employee.findMany({
         where: empWhere,
-        select: { employeeId: true, firstName: true, lastName: true },
+        select: {
+          employeeId: true,
+          firstName: true,
+          lastName: true,
+          department: { select: { name: true } },
+          designation: { select: { name: true } },
+          shift: { select: { weeklyOff: true } }
+        },
         take: 50
       });
 
       emps.forEach(e => {
-        sheet.addRow([e.employeeId, `${e.firstName} ${e.lastName}`, 'General Shift', 'General Shift', 'General Shift', 'General Shift', 'General Shift', 'OFF', 'OFF']);
+        const offStr = (e.shift?.weeklyOff && e.shift.weeklyOff.length > 0) ? e.shift.weeklyOff.map((w: string) => w.substring(0, 3)).join(', ') : 'Sun';
+        sheet.addRow([e.employeeId, `${e.firstName} ${e.lastName}`, e.department?.name || '', e.designation?.name || '', offStr, 'OFF', 'General Shift', 'General Shift', 'General Shift', 'General Shift', 'General Shift', 'OFF']);
       });
     } else {
-      sheet.addRow(['EMP-7065', 'John Doe', 'General Shift', 'General Shift', 'General Shift', 'General Shift', 'Morning Shift', 'OFF', 'OFF']);
+      sheet.addRow(['EMP-7065', 'John Doe', 'Engineering', 'Developer', 'Sun', 'OFF', 'General Shift', 'General Shift', 'General Shift', 'General Shift', 'Morning Shift', 'OFF']);
     }
 
     sheet.columns.forEach(c => c.width = 18);
@@ -1132,44 +1203,103 @@ export const importXlsx = async (req: AuthRequest, res: Response) => {
 
     const defaultShift = shifts[0];
 
-    // Read rows
+    // Dynamic row & column detection
+    let headerRowIndex = 4;
+    let empIdCol = 1;
+    let dayCols: number[] = [];
+
+    // 1. Find header row
+    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      row.eachCell((cell, colNumber) => {
+        const val = String(cell.value || '').trim().toUpperCase();
+        if (val.includes('EMPLOYEE ID') || val.includes('EMP ID')) {
+          headerRowIndex = rowNumber;
+          empIdCol = colNumber;
+        }
+      });
+    });
+
+    // 2. Identify 7 day column numbers from header row
+    const headerRow = worksheet.getRow(headerRowIndex);
+    headerRow.eachCell((cell, colNumber) => {
+      if (colNumber > empIdCol) {
+        const val = String(cell.value || '').trim().toUpperCase();
+        const daysKeywords = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+        if (daysKeywords.some(kw => val.includes(kw))) {
+          dayCols.push(colNumber);
+        }
+      }
+    });
+
+    // Fallback if day columns weren't explicitly matched by weekday keywords
+    if (dayCols.length < 7) {
+      const col5Val = String(headerRow.getCell(empIdCol + 4).value || '').toUpperCase();
+      const startCol = col5Val.includes('OFF') || col5Val.includes('WEEK') ? empIdCol + 5 : empIdCol + 4;
+      dayCols = [startCol, startCol + 1, startCol + 2, startCol + 3, startCol + 4, startCol + 5, startCol + 6];
+    }
+
+    // Read data rows
     const importedEntries: any[] = [];
     const warnings: string[] = [];
 
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber <= 3) return; // Skip title and header rows
+    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      if (rowNumber <= headerRowIndex) return; // Skip headers
 
-      const empIdVal = String(row.getCell(1).value || '').trim();
-      if (!empIdVal || empIdVal.toLowerCase().includes('employee')) return;
+      const empIdVal = String(row.getCell(empIdCol).value || '').trim();
+      if (!empIdVal || empIdVal.toUpperCase().includes('EMPLOYEE')) return;
 
       for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
         const dateStr = days[dayIdx];
-        const cellValue = String(row.getCell(dayIdx + 3).value || '').trim().toUpperCase();
+        const targetCol = dayCols[dayIdx];
+        const cellValue = String(row.getCell(targetCol).value || '').trim();
+        const cellUpper = cellValue.toUpperCase();
 
         let type = 'SHIFT';
-        let shiftId = defaultShift ? defaultShift.id : null;
+        let shiftId: string | null = defaultShift ? defaultShift.id : null;
         let leaveType: string | null = null;
 
-        if (cellValue.includes('OFF')) {
+        if (cellUpper.includes('OFF')) {
           type = 'WEEK_OFF';
           shiftId = null;
-        } else if (cellValue.includes('LEAVE') || cellValue.includes('SICK') || cellValue.includes('CASUAL')) {
+        } else if (cellUpper.includes('LEAVE') || cellUpper.includes('SICK') || cellUpper.includes('CASUAL') || cellUpper.includes('PAID') || cellUpper.includes('EARNED')) {
           type = 'LEAVE';
-          leaveType = cellValue;
+          leaveType = cellValue || 'LEAVE';
           shiftId = null;
-        } else if (cellValue.includes('WFH') || cellValue.includes('HOME')) {
+        } else if (cellUpper.includes('WFH') || cellUpper.includes('HOME')) {
           type = 'WFH';
-        } else if (cellValue.includes('HALF')) {
+          shiftId = null;
+        } else if (cellUpper.includes('HALF')) {
           type = 'HALF_DAY';
-        } else if (cellValue.includes('HOLIDAY')) {
+          shiftId = null;
+        } else if (cellUpper.includes('HOLIDAY')) {
           type = 'HOLIDAY';
+          shiftId = null;
         } else if (cellValue) {
-          // Attempt matching shift name
-          const matchedShiftId = shiftMap.get(cellValue.toLowerCase());
+          const cellLower = cellValue.toLowerCase();
+          let matchedShiftId = shiftMap.get(cellLower);
+
+          if (!matchedShiftId) {
+            for (const [sName, sId] of shiftMap.entries()) {
+              if (cellLower.includes(sName) || sName.includes(cellLower)) {
+                matchedShiftId = sId;
+                break;
+              }
+            }
+          }
+
+          if (!matchedShiftId) {
+            for (const s of shifts) {
+              if (cellLower.includes(s.startTime)) {
+                matchedShiftId = s.id;
+                break;
+              }
+            }
+          }
+
           if (matchedShiftId) {
             shiftId = matchedShiftId;
           } else {
-            warnings.push(`Row ${rowNumber}: Unknown shift name "${cellValue}" for ${empIdVal}. Defaulted to General Shift.`);
+            warnings.push(`Row ${rowNumber}: Could not match shift "${cellValue}" for ${empIdVal}. Defaulted to General Shift.`);
           }
         }
 
@@ -1197,9 +1327,9 @@ export const importXlsx = async (req: AuthRequest, res: Response) => {
     let roster = await prisma.weeklyRoster.findFirst({
       where: {
         departmentId: targetDepartmentId,
-        designationId: targetDesignationId,
         weekStart
-      }
+      },
+      orderBy: { updatedAt: 'desc' }
     });
 
     if (roster?.status === 'LOCKED') {
