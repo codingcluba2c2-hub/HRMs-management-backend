@@ -6,6 +6,7 @@ import ExcelJS from 'exceljs';
 import { emitRosterEvent } from '../../lib/socket';
 import { invalidateCachePattern } from '../../lib/redis';
 import { getTenantEmployeeFilter } from '../../utils/tenantFilter';
+import { getManagerScopedEmployeeFilter, resolveUserManagerScope } from '../../utils/managerScope';
 import { getOrCreateEmployeeForUser } from '../../utils/employeeUtils';
 
 /**
@@ -77,11 +78,35 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
   try {
     const { departmentId, designationId, weekStart: weekStartParam } = req.query;
 
+    const scope = await resolveUserManagerScope(req.user);
+    if (scope.isManager) {
+      if (scope.departmentIds.length === 0) {
+        const { weekStart, weekEnd, days } = getWeekRange(weekStartParam as string);
+        return res.status(200).json(new ApiResponse(true, 'Roster fetched successfully', {
+          roster: { id: null, status: 'DRAFT', version: 1, publishedAt: null },
+          department: { id: 'NONE', name: 'No Department Assigned', code: 'NONE' },
+          weekStart: weekStart.toISOString().split('T')[0],
+          weekEnd: weekEnd.toISOString().split('T')[0],
+          days,
+          grid: [],
+          shifts: [],
+          conflicts: [],
+          stats: { totalEmployees: 0, scheduled: 0, weekOff: 0, onLeave: 0, unassigned: 0, conflicts: 0 }
+        }));
+      }
+
+      if (departmentId && departmentId !== 'ALL' && departmentId !== 'all') {
+        if (!scope.departmentIds.includes(departmentId as string)) {
+          return res.status(403).json(new ApiResponse(false, 'Forbidden: Department out of authorized scope'));
+        }
+      }
+    }
+
     const { weekStart, weekEnd, days } = getWeekRange(weekStartParam as string);
 
     // Fetch department details
     let department: any = null;
-    if (departmentId && departmentId !== 'ALL') {
+    if (departmentId && departmentId !== 'ALL' && departmentId !== 'all') {
       department = await prisma.department.findUnique({
         where: { id: departmentId as string },
         select: { id: true, name: true, code: true }
@@ -94,12 +119,12 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
 
     // Build designation filter
     let targetDesignationId: string | null = null;
-    if (designationId && designationId !== 'ALL') {
+    if (designationId && designationId !== 'ALL' && designationId !== 'all') {
       targetDesignationId = designationId as string;
     }
 
     // Fetch employees for this tenant
-    const tenantFilter = getTenantEmployeeFilter(req.user);
+    const tenantFilter = await getManagerScopedEmployeeFilter(req.user);
     const employeeWhere: any = {
       status: 'ACTIVE',
       AND: [
@@ -107,12 +132,11 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
       ]
     };
 
-    if (departmentId && departmentId !== 'ALL') {
+    if (departmentId && departmentId !== 'ALL' && departmentId !== 'all') {
+      employeeWhere.AND.push({ departmentId: departmentId as string });
+    } else if (scope.isManager && scope.departmentIds.length > 0) {
       employeeWhere.AND.push({
-        OR: [
-          { departmentId: departmentId as string },
-          { departmentId: null }
-        ]
+        departmentId: { in: scope.departmentIds }
       });
     }
 
@@ -404,6 +428,28 @@ export const saveDraft = async (req: AuthRequest, res: Response) => {
       return res.status(400).json(new ApiResponse(false, 'departmentId, weekStart, and entries array are required'));
     }
 
+    const scope = await resolveUserManagerScope(req.user);
+    if (scope.isManager) {
+      if (!departmentId || departmentId === 'ALL' || !scope.departmentIds.includes(departmentId)) {
+        return res.status(403).json(new ApiResponse(false, 'Forbidden: Department out of authorized scope'));
+      }
+      const targetEmpIds = Array.from(new Set(entries.map((e: any) => e.employeeId)));
+      if (targetEmpIds.length > 0) {
+        const unauthorizedEmpCount = await prisma.employee.count({
+          where: {
+            id: { in: targetEmpIds as string[] },
+            OR: [
+              { departmentId: { notIn: scope.departmentIds } },
+              { departmentId: null }
+            ]
+          }
+        });
+        if (unauthorizedEmpCount > 0) {
+          return res.status(403).json(new ApiResponse(false, 'Forbidden: Target employee out of authorized department scope'));
+        }
+      }
+    }
+
     const { weekStart, weekEnd } = getWeekRange(weekStartParam);
     const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? departmentId : null;
 
@@ -541,6 +587,13 @@ export const publishRoster = async (req: AuthRequest, res: Response) => {
   try {
     const { rosterId, departmentId, designationId, weekStart: weekStartParam } = req.body;
 
+    const scope = await resolveUserManagerScope(req.user);
+    if (scope.isManager) {
+      if (departmentId && (departmentId === 'ALL' || !scope.departmentIds.includes(departmentId))) {
+        return res.status(403).json(new ApiResponse(false, 'Forbidden: Department out of authorized scope'));
+      }
+    }
+
     let roster: any = null;
     if (rosterId) {
       roster = await prisma.weeklyRoster.findUnique({
@@ -562,6 +615,10 @@ export const publishRoster = async (req: AuthRequest, res: Response) => {
 
     if (!roster) {
       return res.status(404).json(new ApiResponse(false, 'No roster found to publish. Save draft first.'));
+    }
+
+    if (scope.isManager && roster.departmentId && !scope.departmentIds.includes(roster.departmentId)) {
+      return res.status(403).json(new ApiResponse(false, 'Forbidden: Roster department out of authorized scope'));
     }
 
     if (roster.status === 'LOCKED') {
@@ -657,6 +714,13 @@ export const copyWeek = async (req: AuthRequest, res: Response) => {
 
     if (!departmentId || !sourceWeekStart || !targetWeekStart) {
       return res.status(400).json(new ApiResponse(false, 'departmentId, sourceWeekStart, and targetWeekStart are required'));
+    }
+
+    const scope = await resolveUserManagerScope(req.user);
+    if (scope.isManager) {
+      if (departmentId === 'ALL' || !scope.departmentIds.includes(departmentId)) {
+        return res.status(403).json(new ApiResponse(false, 'Forbidden: Department out of authorized scope'));
+      }
     }
 
     const sourceRange = getWeekRange(sourceWeekStart);
@@ -787,10 +851,27 @@ export const getRosterHistory = async (req: AuthRequest, res: Response) => {
   try {
     const { departmentId, designationId } = req.query;
 
+    const scope = await resolveUserManagerScope(req.user);
     const where: any = {};
-    if (departmentId && departmentId !== 'ALL') {
-      where.departmentId = departmentId as string;
+
+    if (scope.isManager) {
+      if (scope.departmentIds.length === 0) {
+        return res.status(200).json(new ApiResponse(true, 'Roster history fetched successfully', []));
+      }
+      if (departmentId && departmentId !== 'ALL') {
+        if (!scope.departmentIds.includes(departmentId as string)) {
+          return res.status(403).json(new ApiResponse(false, 'Forbidden: Department out of authorized scope'));
+        }
+        where.departmentId = departmentId as string;
+      } else {
+        where.departmentId = { in: scope.departmentIds };
+      }
+    } else {
+      if (departmentId && departmentId !== 'ALL') {
+        where.departmentId = departmentId as string;
+      }
     }
+
     if (designationId && designationId !== 'ALL') {
       where.designationId = designationId as string;
     }
@@ -819,6 +900,17 @@ export const getRosterHistory = async (req: AuthRequest, res: Response) => {
 export const getAuditLogs = async (req: AuthRequest, res: Response) => {
   try {
     const { rosterId } = req.params;
+
+    const scope = await resolveUserManagerScope(req.user);
+    if (scope.isManager) {
+      const roster = await prisma.weeklyRoster.findUnique({
+        where: { id: rosterId },
+        select: { departmentId: true }
+      });
+      if (!roster || (roster.departmentId && !scope.departmentIds.includes(roster.departmentId))) {
+        return res.status(403).json(new ApiResponse(false, 'Forbidden: Roster out of authorized department scope'));
+      }
+    }
 
     const logs = await prisma.rosterAuditLog.findMany({
       where: { rosterId },
@@ -864,26 +956,49 @@ export const exportXlsx = async (req: AuthRequest, res: Response) => {
       if (desig) designationName = desig.name;
     }
 
+    const scope = await resolveUserManagerScope(req.user);
+    if (scope.isManager) {
+      if (scope.departmentIds.length === 0) {
+        return res.status(403).json(new ApiResponse(false, 'Forbidden: No authorized department assigned'));
+      }
+      if (departmentId && departmentId !== 'ALL' && !scope.departmentIds.includes(departmentId)) {
+        return res.status(403).json(new ApiResponse(false, 'Forbidden: Department out of authorized scope'));
+      }
+    }
+
     // Fetch employees & roster
-    const tenantFilter = getTenantEmployeeFilter(req.user);
+    const tenantFilter = await getManagerScopedEmployeeFilter(req.user);
     const employeeWhere: any = {
       status: 'ACTIVE',
-      ...tenantFilter
+      AND: [
+        tenantFilter
+      ]
     };
     if (departmentId && departmentId !== 'ALL') {
-      employeeWhere.departmentId = departmentId;
+      employeeWhere.AND.push({
+        OR: [
+          { departmentId: departmentId },
+          { departmentId: null }
+        ]
+      });
+    } else if (scope.isManager && scope.departmentIds.length > 0) {
+      employeeWhere.AND.push({
+        departmentId: { in: scope.departmentIds }
+      });
     }
     if (designationId && designationId !== 'ALL') {
-      employeeWhere.designationId = designationId;
+      employeeWhere.AND.push({ designationId: designationId });
     }
 
     if (searchTerm && typeof searchTerm === 'string' && searchTerm.trim()) {
       const term = searchTerm.trim().toLowerCase();
-      employeeWhere.OR = [
-        { firstName: { contains: term, mode: 'insensitive' } },
-        { lastName: { contains: term, mode: 'insensitive' } },
-        { employeeId: { contains: term, mode: 'insensitive' } }
-      ];
+      employeeWhere.AND.push({
+        OR: [
+          { firstName: { contains: term, mode: 'insensitive' } },
+          { lastName: { contains: term, mode: 'insensitive' } },
+          { employeeId: { contains: term, mode: 'insensitive' } }
+        ]
+      });
     }
 
     let employees = await prisma.employee.findMany({
@@ -1116,6 +1231,13 @@ export const downloadTemplate = async (req: AuthRequest, res: Response) => {
   try {
     const { departmentId, designationId } = req.query;
 
+    const scope = await resolveUserManagerScope(req.user);
+    if (scope.isManager) {
+      if (!departmentId || departmentId === 'ALL' || !scope.departmentIds.includes(departmentId as string)) {
+        return res.status(403).json(new ApiResponse(false, 'Forbidden: Department out of authorized scope'));
+      }
+    }
+
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Roster Import Template');
 
@@ -1133,7 +1255,7 @@ export const downloadTemplate = async (req: AuthRequest, res: Response) => {
     });
 
     if (departmentId && departmentId !== 'ALL') {
-      const tenantFilter = getTenantEmployeeFilter(req.user);
+      const tenantFilter = await getManagerScopedEmployeeFilter(req.user);
       const empWhere: any = { departmentId: departmentId as string, ...tenantFilter };
       if (designationId && designationId !== 'ALL') empWhere.designationId = designationId as string;
 
@@ -1180,6 +1302,13 @@ export const importXlsx = async (req: AuthRequest, res: Response) => {
 
     if (!departmentId || !weekStartParam || !fileData) {
       return res.status(400).json(new ApiResponse(false, 'departmentId, weekStart, and base64 fileData are required'));
+    }
+
+    const scope = await resolveUserManagerScope(req.user);
+    if (scope.isManager) {
+      if (departmentId === 'ALL' || !scope.departmentIds.includes(departmentId)) {
+        return res.status(403).json(new ApiResponse(false, 'Forbidden: Department out of authorized scope'));
+      }
     }
 
     const { weekStart, weekEnd, days } = getWeekRange(weekStartParam);

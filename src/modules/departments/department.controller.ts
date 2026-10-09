@@ -2,6 +2,7 @@ import { prisma } from '../../lib/prisma';
 import { Request, Response } from 'express';
 import { ApiResponse } from '../../utils/ApiResponse';
 import { getTenantDepartmentFilter, getTenantEmployeeFilter } from '../../utils/tenantFilter';
+import { syncDepartmentManagerAssignments } from '../../services/departmentManager.service';
 
 // Summary KPI metrics for Organization Management page
 export const getDepartmentSummary = async (req: Request, res: Response) => {
@@ -125,9 +126,16 @@ export const createDepartment = async (req: Request, res: Response) => {
         code: formattedCode,
         description: description?.trim() || null,
         status: status ?? true,
-        managerId: managerId || null,
         createdById: userId || null
-      },
+      }
+    });
+
+    if (managerId) {
+      await syncDepartmentManagerAssignments(department.id, managerId, userId);
+    }
+
+    const finalDept = await prisma.department.findUnique({
+      where: { id: department.id },
       include: {
         manager: {
           select: { id: true, firstName: true, lastName: true, employeeId: true, email: true }
@@ -145,7 +153,7 @@ export const createDepartment = async (req: Request, res: Response) => {
       }
     }).catch(() => {});
 
-    return res.status(201).json(new ApiResponse(true, 'Department created successfully', department));
+    return res.status(201).json(new ApiResponse(true, 'Department created successfully', finalDept));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
   }
@@ -180,48 +188,28 @@ export const updateDepartment = async (req: Request, res: Response) => {
       }
     }
 
-    if (managerId) {
-      const emp = await prisma.employee.findUnique({ where: { id: managerId } });
-      if (!emp) return res.status(404).json(new ApiResponse(false, 'Department manager employee profile not found'));
-      
-      // Auto-sync employee's department to this department if not already set
-      if (emp.departmentId !== id) {
-        await prisma.employee.update({
-          where: { id: managerId },
-          data: { departmentId: id }
-        });
-      }
-    }
-
-    const updatedDepartment = await prisma.department.update({
+    await prisma.department.update({
       where: { id },
       data: {
         name: formattedName,
         code: formattedCode,
         description: description !== undefined ? (description?.trim() || null) : existingDept.description,
-        status: status !== undefined ? status : existingDept.status,
-        managerId: managerId !== undefined ? (managerId || null) : existingDept.managerId
-      },
+        status: status !== undefined ? status : existingDept.status
+      }
+    });
+
+    if (managerId !== undefined) {
+      await syncDepartmentManagerAssignments(id, managerId || null, userId);
+    }
+
+    const updatedDepartment = await prisma.department.findUnique({
+      where: { id },
       include: {
         manager: {
           select: { id: true, firstName: true, lastName: true, employeeId: true, email: true }
         }
       }
     });
-
-    if (managerId) {
-      // 1. Department Head reports to top management (null managerId)
-      await prisma.employee.update({
-        where: { id: managerId },
-        data: { managerId: null }
-      }).catch(() => {});
-
-      // 2. All other employees in this department report to Department Head
-      await prisma.employee.updateMany({
-        where: { departmentId: id, id: { not: managerId } },
-        data: { managerId }
-      }).catch(() => {});
-    }
 
     // Audit log
     await prisma.auditLog.create({
@@ -252,15 +240,17 @@ export const deleteDepartment = async (req: Request, res: Response) => {
     if (action === 'deactivate') {
       await prisma.department.update({
         where: { id },
-        data: { status: false, managerId: null }
+        data: { status: false }
       });
+      await syncDepartmentManagerAssignments(id, null, (req as any).user?.id);
       return res.status(200).json(new ApiResponse(true, `Department "${dept.name}" deactivated successfully`));
     }
 
     if (force || action === 'force_delete') {
+      await syncDepartmentManagerAssignments(id, null, (req as any).user?.id);
       await prisma.employee.updateMany({
         where: { departmentId: id },
-        data: { departmentId: null, designationId: null }
+        data: { departmentId: null, designationId: null, managerId: null }
       });
       await prisma.designation.deleteMany({
         where: { departmentId: id }
@@ -322,52 +312,7 @@ export const assignDepartmentManager = async (req: Request, res: Response) => {
     const department = await prisma.department.findFirst({ where: { id, ...tenantDeptFilter } });
     if (!department) return res.status(404).json(new ApiResponse(false, 'Department not found'));
 
-    if (managerId) {
-      const emp = await prisma.employee.findUnique({ where: { id: managerId } });
-      if (!emp) return res.status(404).json(new ApiResponse(false, 'Employee not found'));
-
-      // If manager belongs to another department, transfer them to this department
-      if (emp.departmentId !== id) {
-        await prisma.employee.update({
-          where: { id: managerId },
-          data: { departmentId: id }
-        });
-      }
-    }
-
-    const updatedDepartment = await prisma.department.update({
-      where: { id },
-      data: { managerId: managerId || null },
-      include: {
-        manager: {
-          select: { id: true, firstName: true, lastName: true, employeeId: true, email: true }
-        }
-      }
-    });
-
-    if (managerId) {
-      // 1. Department Head reports to top management (null managerId)
-      await prisma.employee.update({
-        where: { id: managerId },
-        data: { managerId: null }
-      }).catch(() => {});
-
-      // 2. All other employees in this department report to Department Head
-      await prisma.employee.updateMany({
-        where: { departmentId: id, id: { not: managerId } },
-        data: { managerId }
-      }).catch(() => {});
-    }
-
-    // Audit log
-    await prisma.auditLog.create({
-      data: {
-        userId: (req as any).user?.id || null,
-        action: 'DEPARTMENT_MANAGER_CHANGED',
-        entity: 'Department',
-        entityId: id
-      }
-    }).catch(() => {});
+    const updatedDepartment = await syncDepartmentManagerAssignments(id, managerId || null, (req as any).user?.id);
 
     return res.status(200).json(new ApiResponse(true, 'Department manager updated successfully', updatedDepartment));
   } catch (error: any) {
@@ -375,69 +320,68 @@ export const assignDepartmentManager = async (req: Request, res: Response) => {
   }
 };
 
+
 export const getOrganizationOverview = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user?.id;
-    const tenantDeptFilter = await getTenantDepartmentFilter((req as any).user);
-    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
-    const isSuperAdmin = (req as any).user?.role === 'SUPER_ADMIN' || (req as any).user?.role?.name === 'SUPER_ADMIN';
+    const user = (req as any).user;
+    const userId = user?.id;
+    const tenantDeptFilter = await getTenantDepartmentFilter(user);
+    const tenantEmpFilter = getTenantEmployeeFilter(user);
+    const isSuperAdmin = user?.role === 'SUPER_ADMIN' || user?.role?.name === 'SUPER_ADMIN';
 
-    let companyName: string | null = null;
-    if (userId) {
-      const user = await prisma.user.findUnique({ where: { id: userId } });
-      companyName = user?.companyName || null;
-      if (!companyName) {
-        const employee = await prisma.employee.findUnique({ where: { userId } });
-        if (employee && employee.createdById) {
-          const creator = await prisma.user.findUnique({ where: { id: employee.createdById } });
-          companyName = creator?.companyName || null;
-        }
-      }
+    let companyName: string | null = user?.companyName || user?.company?.name || null;
+    if (!companyName && userId) {
+      const dbUser = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { companyName: true, company: { select: { name: true } } }
+      });
+      companyName = dbUser?.companyName || dbUser?.company?.name || null;
     }
 
-    const totalDepartments = await prisma.department.count({ where: tenantDeptFilter });
-    
     const designationFilter = isSuperAdmin ? {} : {
       OR: [
         { createdById: userId },
         { department: tenantDeptFilter }
       ]
     };
-    const totalDesignations = await prisma.designation.count({ where: designationFilter });
 
-    const assignedEmployees = await prisma.employee.count({
-      where: {
-        ...tenantEmpFilter,
-        departmentId: { not: null }
-      }
-    });
-
-    const departments = await prisma.department.findMany({
-      where: tenantDeptFilter,
-      include: {
-        manager: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            employeeId: true,
-            email: true,
-            photo: true,
-            designation: { select: { name: true } }
+    const [totalDesignations, assignedEmployees, departments] = await Promise.all([
+      prisma.designation.count({ where: designationFilter }),
+      prisma.employee.count({
+        where: {
+          ...tenantEmpFilter,
+          departmentId: { not: null }
+        }
+      }),
+      prisma.department.findMany({
+        where: tenantDeptFilter,
+        include: {
+          manager: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              employeeId: true,
+              email: true,
+              photo: true,
+              designation: { select: { name: true } }
+            }
+          },
+          designations: {
+            include: {
+              _count: { select: { employees: { where: tenantEmpFilter } } }
+            },
+            orderBy: [{ level: 'asc' }, { name: 'asc' }]
+          },
+          _count: {
+            select: { employees: { where: tenantEmpFilter }, designations: true }
           }
         },
-        designations: {
-          include: {
-            _count: { select: { employees: { where: tenantEmpFilter } } }
-          },
-          orderBy: [{ level: 'asc' }, { name: 'asc' }]
-        },
-        _count: {
-          select: { employees: { where: tenantEmpFilter }, designations: true }
-        }
-      },
-      orderBy: { name: 'asc' }
-    });
+        orderBy: { name: 'asc' }
+      })
+    ]);
+
+    const totalDepartments = departments.length;
 
     const formattedDepartments = departments.map((d) => {
       const deptManager = d.manager;

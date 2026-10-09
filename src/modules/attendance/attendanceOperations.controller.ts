@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../../lib/prisma';
 import { ApiResponse } from '../../utils/ApiResponse';
 import { getTenantEmployeeFilter } from '../../utils/tenantFilter';
+import { getManagerScopedEmployeeFilter, resolveUserManagerScope } from '../../utils/managerScope';
 
 // Helper to get start and end of today
 const getTodayRange = () => {
@@ -15,7 +16,7 @@ const getTodayRange = () => {
 export const getSummary = async (req: Request, res: Response) => {
   try {
     const { start, end } = getTodayRange();
-    const tenantFilter = getTenantEmployeeFilter((req as any).user);
+    const tenantFilter = await getManagerScopedEmployeeFilter((req as any).user);
 
     // 1. KPI Section
     const allEmployeesCount = await prisma.employee.count({ 
@@ -27,7 +28,7 @@ export const getSummary = async (req: Request, res: Response) => {
     });
 
     const presentToday = todaysRecords.filter(r => r.status === 'PRESENT').length;
-    const absentToday = allEmployeesCount - presentToday; // Simplistic
+    const absentToday = Math.max(0, allEmployeesCount - presentToday);
     
     // Late arrivals: if punchIn > shift start + grace time (assume 10:00 AM standard for now if no shift)
     const lateArrivals = todaysRecords.filter(r => {
@@ -41,7 +42,9 @@ export const getSummary = async (req: Request, res: Response) => {
     const checkedIn = todaysRecords.filter(r => r.logs.some(l => !l.punchOut)).length;
     const checkedOut = todaysRecords.filter(r => r.logs.length > 0 && r.logs.every(l => l.punchOut)).length;
     
-    const pendingCorrections = await prisma.attendanceCorrection.count({ where: { status: 'PENDING' } });
+    const pendingCorrections = await prisma.attendanceCorrection.count({
+      where: { status: 'PENDING', employee: tenantFilter }
+    });
     const overtimeEmployees = todaysRecords.filter(r => r.grossHours > 9).length;
     
     const attendancePercent = allEmployeesCount > 0 ? Math.round((presentToday / allEmployeesCount) * 100) : 0;
@@ -52,9 +55,8 @@ export const getSummary = async (req: Request, res: Response) => {
 
     // 2. Workforce Summary
     const onLeave = await prisma.leaveRequest.count({ 
-      where: { startDate: { lte: end }, endDate: { gte: start }, status: 'APPROVED' } 
+      where: { startDate: { lte: end }, endDate: { gte: start }, status: 'APPROVED', employee: tenantFilter } 
     });
-    // Mocking remote, halfday, holiday for structure
     const working = presentToday;
     const remote = Math.floor(presentToday * 0.1); 
     const halfDay = 0;
@@ -96,12 +98,25 @@ export const getOperationsList = async (req: Request, res: Response) => {
     const limitNum = parseInt(limit as string);
     const skip = (pageNum - 1) * limitNum;
 
-    // AUTO-GENERATE TODAY'S ROSTER (Enterprise Pattern)
-    // This ensures that all active employees have a physical ABSENT record in the DB for today,
-    // so they show up in all views (All Dates, Today, etc.)
+    const scope = await resolveUserManagerScope((req as any).user);
+    if (scope.isManager) {
+      if (scope.departmentIds.length === 0) {
+        return res.status(200).json(new ApiResponse(true, "Fetched records", {
+          data: [],
+          pagination: { total: 0, page: pageNum, limit: limitNum, totalPages: 1 }
+        }));
+      }
+
+      if (departmentId && departmentId !== 'ALL' && departmentId !== 'all') {
+        if (!scope.departmentIds.includes(departmentId as string)) {
+          return res.status(403).json(new ApiResponse(false, "Forbidden: Department out of authorized scope"));
+        }
+      }
+    }
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const tenantFilter = getTenantEmployeeFilter((req as any).user);
+    const tenantFilter = await getManagerScopedEmployeeFilter((req as any).user);
     
     const activeEmployees = await prisma.employee.findMany({ 
       where: { 
@@ -141,12 +156,14 @@ export const getOperationsList = async (req: Request, res: Response) => {
       };
     }
     
-    if (departmentId && departmentId !== 'all') {
+    if (departmentId && departmentId !== 'all' && departmentId !== 'ALL') {
       if (whereClause.employee) {
         whereClause.employee.departmentId = departmentId;
       } else {
         whereClause.employee = { departmentId };
       }
+    } else if (scope.isManager && scope.departmentIds.length > 0) {
+      whereClause.employee = { ...whereClause.employee, departmentId: { in: scope.departmentIds } };
     }
 
     if (status && status !== 'all') {
@@ -190,6 +207,7 @@ export const getOperationsList = async (req: Request, res: Response) => {
 
 export const getAnalytics = async (req: Request, res: Response) => {
   try {
+    const tenantFilter = await getManagerScopedEmployeeFilter((req as any).user);
     // Generate last 7 days trend
     const trend = [];
     for (let i = 6; i >= 0; i--) {
@@ -198,17 +216,14 @@ export const getAnalytics = async (req: Request, res: Response) => {
       const start = new Date(d); start.setHours(0,0,0,0);
       const end = new Date(d); end.setHours(23,59,59,999);
       
-      const present = await prisma.attendanceRecord.count({ where: { date: { gte: start, lte: end }, status: 'PRESENT' } });
-      const absent = await prisma.employee.count({ 
+      const present = await prisma.attendanceRecord.count({ where: { date: { gte: start, lte: end }, status: 'PRESENT', employee: tenantFilter } });
+      const totalEmpCount = await prisma.employee.count({ 
         where: { 
           status: 'ACTIVE',
-          isDeleted: false,
-          NOT: [
-            { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
-            { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } }
-          ]
+          ...tenantFilter
         } 
-      }) - present;
+      });
+      const absent = totalEmpCount - present;
       trend.push({ name: d.toLocaleDateString('en-US', { weekday: 'short' }), present, absent: absent > 0 ? absent : 0 });
     }
 
@@ -220,7 +235,9 @@ export const getAnalytics = async (req: Request, res: Response) => {
 
 export const getRecentActivities = async (req: Request, res: Response) => {
   try {
+    const tenantFilter = await getManagerScopedEmployeeFilter((req as any).user);
     const logs = await prisma.attendanceLog.findMany({
+      where: { attendance: { employee: tenantFilter } },
       take: 5,
       orderBy: { punchIn: 'desc' },
       include: {

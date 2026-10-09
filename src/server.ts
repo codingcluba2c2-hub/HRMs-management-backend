@@ -26,6 +26,7 @@ import dashboardRoutes from './modules/dashboard/dashboard.route';
 import redis from './lib/redis';
 import companyRoutes from './modules/company/company.route';
 import announcementRoutes from './modules/announcements/announcement.route';
+import googleSheetsRoutes from './modules/googleSheets/googleSheets.route';
 import publicRoutes from './modules/public/public.route';
 import { errorHandler } from './middlewares/errorMiddleware';
 import cookieParser from 'cookie-parser';
@@ -123,6 +124,7 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/company', companyRoutes);
 app.use('/api/announcements', announcementRoutes); // Active Announcement Module
+app.use('/api/google-sheets', googleSheetsRoutes);
 
 // Swagger Documentation
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
@@ -142,6 +144,8 @@ import { initSocketServer } from './lib/socket';
 const server = http.createServer(app);
 initSocketServer(server);
 
+import { backfillAllDepartmentManagers } from './services/departmentManager.service';
+
 const repairTenantData = async () => {
   try {
     // 1. Ensure all employees with a user profile (like HR Admins/Managers) have createdById set to their own userId
@@ -156,6 +160,11 @@ const repairTenantData = async () => {
         }).catch(() => {});
       }
     }
+
+    // 2. Centralized Department-Manager reporting relationship backfill & role reconciliation
+    await backfillAllDepartmentManagers().catch(err => {
+      console.error('Department manager backfill warning:', err);
+    });
   } catch (err) {
     console.error('Tenant data sync warning:', err);
   }
@@ -171,7 +180,6 @@ const startServer = async () => {
       await prisma.$connect();
       console.log('✅ PostgreSQL Connected');
       console.log('✅ Prisma Connected');
-      await repairTenantData();
       
       server.listen(PORT as number, '0.0.0.0', () => {
         let localIp = 'localhost';
@@ -191,6 +199,17 @@ const startServer = async () => {
         console.log(`👉 http://${localIp}:${PORT}`);
         console.log('========================================================\n');
       });
+
+      repairTenantData().catch(err => console.error('repairTenantData error:', err));
+      console.log('⚡ HRMS Backend Google Sheets Live Outbox System Active');
+
+      // Start background worker to process Google Sheets live sync outbox
+      setInterval(async () => {
+        try {
+          const { GoogleSheetsService } = await import('./services/googleSheets.service');
+          await GoogleSheetsService.processOutboxQueue();
+        } catch (err) {}
+      }, 15000);
       break;
     } catch (error) {
       console.error(`⚠️ Connection attempt ${attempt}/${maxRetries} failed:`, error instanceof Error ? error.message : error);

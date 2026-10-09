@@ -6,7 +6,9 @@ import { prisma } from '../../lib/prisma';
 import bcrypt from 'bcryptjs';
 import { decrypt } from '../../utils/encryption';
 import { getTenantEmployeeFilter } from '../../utils/tenantFilter';
+import { getManagerScopedEmployeeFilter } from '../../utils/managerScope';
 import { getOrCreateEmployeeForUser } from '../../utils/employeeUtils';
+import { handleEmployeeDepartmentTransfer } from '../../services/departmentManager.service';
 
 export const createEmployee = async (req: AuthRequest, res: Response) => {
   try {
@@ -60,9 +62,9 @@ export const createEmployee = async (req: AuthRequest, res: Response) => {
       }
     }
 
-    // Resolve department manager if not explicitly set
-    let finalManagerId = data.managerId || null;
-    if (data.departmentId && !finalManagerId) {
+    // Resolve department manager automatically from department
+    let finalManagerId: string | null = null;
+    if (data.departmentId) {
       const dept = await prisma.department.findUnique({ where: { id: data.departmentId } });
       if (dept?.managerId) {
         finalManagerId = dept.managerId;
@@ -80,8 +82,8 @@ export const createEmployee = async (req: AuthRequest, res: Response) => {
         phone: data.phone,
         gender: data.gender,
         dob: data.dob ? new Date(data.dob) : null,
-        departmentId: data.departmentId,
-        designationId: data.designationId,
+        departmentId: data.departmentId || null,
+        designationId: data.designationId || null,
         joiningDate: new Date(data.joiningDate),
         employmentType: data.employmentType,
         managerId: finalManagerId,
@@ -118,40 +120,12 @@ export const getEmployees = async (req: AuthRequest, res: Response) => {
   try {
     const role = req.user?.role;
     const { search, department, designation, status, employmentType, manager, joiningDate, gender } = req.query;
-    
-    // Auto-sync employee reporting managers to match department managers
-    const deptsWithManagers = await prisma.department.findMany({
-      where: { managerId: { not: null } },
-      select: { id: true, managerId: true }
-    });
 
-    for (const d of deptsWithManagers) {
-      if (d.managerId) {
-        // Department head reports to top management (null managerId)
-        await prisma.employee.update({
-          where: { id: d.managerId },
-          data: { managerId: null }
-        }).catch(() => {});
-
-        // All other staff in this department report to Department Head
-        await prisma.employee.updateMany({
-          where: {
-            departmentId: d.id,
-            id: { not: d.managerId },
-            OR: [
-              { managerId: null },
-              { managerId: { not: d.managerId } }
-            ]
-          },
-          data: { managerId: d.managerId }
-        }).catch(() => {});
-      }
-    }
     if (req.user?.id) {
       await getOrCreateEmployeeForUser(req.user.id);
     }
 
-    const tenantFilter = getTenantEmployeeFilter(req.user);
+    const tenantFilter = await getManagerScopedEmployeeFilter(req.user);
     let filter: any = { ...tenantFilter };
 
     if (search) {
@@ -174,14 +148,13 @@ export const getEmployees = async (req: AuthRequest, res: Response) => {
     if (department && department !== 'ALL') filter.departmentId = department as string;
     if (designation && designation !== 'ALL') filter.designationId = designation as string;
     if (status && status !== 'ALL') filter.status = status as string;
-    if (employmentType && employmentType !== 'ALL') filter.employmentType = employmentType as string;
     if (manager && manager !== 'ALL') filter.managerId = manager as string;
     if (gender && gender !== 'ALL') filter.gender = gender as string;
 
     const employees = await prisma.employee.findMany({
       where: filter,
       include: {
-        department: { select: { id: true, name: true, managerId: true } },
+        department: { select: { id: true, name: true, managerId: true, manager: { select: { id: true, firstName: true, lastName: true } } } },
         designation: { select: { id: true, name: true } },
         manager: { select: { id: true, firstName: true, lastName: true, employeeId: true } },
         leaveBalance: true,
@@ -234,34 +207,15 @@ export const updateEmployee = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const data = req.body;
+    const actorUserId = (req as any).user?.id;
 
     const existingEmp = await prisma.employee.findUnique({ where: { id } });
     if (!existingEmp) {
       return res.status(404).json(new ApiResponse(false, 'Employee not found'));
     }
 
-    const targetDeptId = data.departmentId !== undefined ? data.departmentId : existingEmp.departmentId;
-    let finalManagerId = data.managerId !== undefined ? data.managerId : existingEmp.managerId;
-
-    const deptChanged = data.departmentId !== undefined && data.departmentId !== existingEmp.departmentId;
-
-    if (targetDeptId) {
-      const targetDept = await prisma.department.findUnique({ where: { id: targetDeptId } });
-      if (targetDept) {
-        if (targetDept.managerId === id) {
-          finalManagerId = null;
-        } else if (deptChanged) {
-          // Department changed! Auto-assign target department's manager
-          if (targetDept.managerId) {
-            finalManagerId = targetDept.managerId;
-          }
-        } else if (!finalManagerId && targetDept.managerId) {
-          finalManagerId = targetDept.managerId;
-        }
-      }
-    }
-
-    const employee = await prisma.employee.update({
+    // First update basic fields
+    await prisma.employee.update({
       where: { id },
       data: {
         firstName: data.firstName !== undefined ? data.firstName : existingEmp.firstName,
@@ -270,21 +224,22 @@ export const updateEmployee = async (req: Request, res: Response) => {
         phone: data.phone !== undefined ? data.phone : existingEmp.phone,
         gender: data.gender !== undefined ? data.gender : existingEmp.gender,
         dob: data.dob !== undefined ? (data.dob ? new Date(data.dob) : null) : existingEmp.dob,
-        departmentId: targetDeptId,
-        designationId: data.designationId !== undefined ? data.designationId : existingEmp.designationId,
         joiningDate: data.joiningDate ? new Date(data.joiningDate) : existingEmp.joiningDate,
         employmentType: data.employmentType !== undefined ? data.employmentType : existingEmp.employmentType,
-        managerId: finalManagerId,
         status: data.status !== undefined ? data.status : existingEmp.status,
-      },
-      include: {
-        department: { select: { id: true, name: true } },
-        designation: { select: { id: true, name: true } },
-        manager: { select: { id: true, firstName: true, lastName: true, employeeId: true } }
+        baseSalary: data.baseSalary !== undefined ? (parseFloat(data.baseSalary) || 0) : existingEmp.baseSalary,
       }
     });
 
-    res.status(200).json(new ApiResponse(true, 'Employee updated successfully', employee));
+    // If department or designation was passed, execute centralized transfer logic
+    const updatedEmployee = await handleEmployeeDepartmentTransfer(
+      id,
+      data.departmentId !== undefined ? data.departmentId : existingEmp.departmentId,
+      data.designationId !== undefined ? data.designationId : existingEmp.designationId,
+      actorUserId
+    );
+
+    res.status(200).json(new ApiResponse(true, 'Employee updated successfully', updatedEmployee));
   } catch (error: any) {
     res.status(500).json(new ApiResponse(false, error.message));
   }
@@ -348,39 +303,58 @@ export const bulkOperations = async (req: AuthRequest, res: Response) => {
 export const updateEmployeeOrganization = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { departmentId, designationId, managerId } = req.body;
+    const { departmentId, designationId } = req.body;
+    const actorUserId = (req as any).user?.id;
 
-    const employee = await prisma.employee.findUnique({ where: { id } });
-    if (!employee) {
-      return res.status(404).json(new ApiResponse(false, 'Employee not found'));
-    }
-
-    const targetDeptId = departmentId !== undefined ? departmentId : employee.departmentId;
-    
-    if (designationId && targetDeptId) {
-      const desig = await prisma.designation.findUnique({ where: { id: designationId } });
-      if (desig && desig.departmentId !== targetDeptId) {
-        return res.status(400).json(new ApiResponse(false, 'Selected designation does not belong to the selected department'));
-      }
-    }
-
-    const updated = await prisma.employee.update({
-      where: { id },
-      data: {
-        departmentId: departmentId || null,
-        designationId: designationId || null,
-        managerId: managerId || null
-      },
-      include: {
-        department: { select: { id: true, name: true, code: true } },
-        designation: { select: { id: true, name: true, code: true } },
-        manager: { select: { id: true, firstName: true, lastName: true, employeeId: true } }
-      }
-    });
+    const updated = await handleEmployeeDepartmentTransfer(id, departmentId, designationId, actorUserId);
 
     return res.status(200).json(new ApiResponse(true, 'Employee organization assignment updated successfully', updated));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
   }
 };
+
+export const assignManagerRole = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { departmentIds } = req.body;
+    const result = await EmployeeService.assignManagerRole(id, departmentIds || [], req.user?.id);
+    return res.status(200).json(new ApiResponse(true, result.message, result));
+  } catch (error: any) {
+    return res.status(400).json(new ApiResponse(false, error.message));
+  }
+};
+
+export const removeManagerRole = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { reassignToManagerId } = req.body;
+    const result = await EmployeeService.removeManagerRole(id, reassignToManagerId, req.user?.id);
+    return res.status(200).json(new ApiResponse(true, result.message, result));
+  } catch (error: any) {
+    return res.status(400).json(new ApiResponse(false, error.message));
+  }
+};
+
+export const getManagerScope = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const scope = await EmployeeService.getManagerScope(id);
+    return res.status(200).json(new ApiResponse(true, 'Manager scope retrieved', scope));
+  } catch (error: any) {
+    return res.status(400).json(new ApiResponse(false, error.message));
+  }
+};
+
+export const updateManagerScope = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { departmentIds, designationIds } = req.body;
+    const result = await EmployeeService.updateManagerScope(id, departmentIds || [], designationIds || []);
+    return res.status(200).json(new ApiResponse(true, result.message, result));
+  } catch (error: any) {
+    return res.status(400).json(new ApiResponse(false, error.message));
+  }
+};
+
 

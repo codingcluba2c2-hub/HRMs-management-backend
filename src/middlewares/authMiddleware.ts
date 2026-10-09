@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma';
 
 // Extend the default Express Request to include our custom user data
 export interface AuthRequest extends Request {
-  user?: { id: string; role: string; email: string; companyName?: string };
+  user?: { id: string; role: string; email: string; companyName?: string; companyId?: string };
 }
 
 // Middleware function to check if the user is logged in
@@ -41,15 +41,17 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
     // Attach the decoded user information to the request
     req.user = decoded;
 
-    // Ensure companyName is populated on req.user for multi-tenant isolation
-    if (req.user && (!req.user.companyName || req.user.companyName === '')) {
+    // Ensure fresh role and company details are populated on req.user
+    if (req.user) {
       try {
         const u = await prisma.user.findUnique({
           where: { id: req.user.id },
-          select: { companyName: true }
+          select: { companyName: true, companyId: true, role: { select: { name: true } } }
         });
-        if (u?.companyName) {
-          req.user.companyName = u.companyName;
+        if (u) {
+          if (u.companyName) req.user.companyName = u.companyName;
+          if (u.companyId) req.user.companyId = u.companyId;
+          if (u.role?.name) req.user.role = u.role.name;
         }
       } catch (e) {}
     }

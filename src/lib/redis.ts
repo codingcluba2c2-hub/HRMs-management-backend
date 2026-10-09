@@ -39,32 +39,38 @@ export const cacheMetrics = {
 
 export default redis;
 
-/**
- * Cache Wrapper to safely wrap asynchronous functions.
- * Fallback to executing the query directly if Redis is down.
- */
+const memoryCacheMap = new Map<string, { data: any; expiry: number }>();
+
 export async function withCache<T>(key: string, ttlSeconds: number, fetcher: () => Promise<T>): Promise<T> {
-  try {
-    if (redis.status !== 'ready') {
-      return await fetcher();
-    }
-
-    const cached = await redis.get(key);
-    if (cached) {
-      cacheMetrics.hits++;
-      return JSON.parse(cached) as T;
-    }
-
-    cacheMetrics.misses++;
-    const freshData = await fetcher();
-    // Background cache set
-    redis.setex(key, ttlSeconds, JSON.stringify(freshData)).catch(() => {});
-    
-    return freshData;
-  } catch (error) {
-    // Fallback if Redis fails
-    return await fetcher();
+  const cachedMem = memoryCacheMap.get(key);
+  if (cachedMem && Date.now() < cachedMem.expiry) {
+    cacheMetrics.hits++;
+    return cachedMem.data as T;
   }
+
+  try {
+    if (redis.status === 'ready') {
+      const cached = await redis.get(key);
+      if (cached) {
+        cacheMetrics.hits++;
+        const parsed = JSON.parse(cached) as T;
+        memoryCacheMap.set(key, { data: parsed, expiry: Date.now() + ttlSeconds * 1000 });
+        return parsed;
+      }
+    }
+  } catch (error) {}
+
+  cacheMetrics.misses++;
+  const freshData = await fetcher();
+  memoryCacheMap.set(key, { data: freshData, expiry: Date.now() + ttlSeconds * 1000 });
+
+  try {
+    if (redis.status === 'ready') {
+      redis.setex(key, ttlSeconds, JSON.stringify(freshData)).catch(() => {});
+    }
+  } catch (e) {}
+
+  return freshData;
 }
 
 export async function invalidateCachePattern(pattern: string) {

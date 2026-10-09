@@ -1,22 +1,23 @@
 import { Response } from 'express';
 import { ApiResponse } from '../../utils/ApiResponse';
 import { AuthRequest } from '../../middlewares/authMiddleware';
-import { getSuperAdminStats, getHRManagerStats, getEmployeeStats } from './dashboard.service';
+import { getSuperAdminStats, getHRManagerStats, getEmployeeStats, getManagerStats } from './dashboard.service';
+import { normalizeRole, CANONICAL_ROLES } from '../../utils/roleConstants';
 
 export const getDashboardStats = async (req: AuthRequest, res: Response) => {
   try {
     const rawRole = req.user?.role || '';
-    const userRole = typeof rawRole === 'string' ? rawRole.toUpperCase().trim().replace(/\s+/g, '_') : '';
-    console.log('[DASHBOARD DEBUG] Raw Role:', rawRole, '=> Parsed Role:', userRole);
+    const role = normalizeRole(rawRole);
     
     let data = {};
-
     const trend = (req.query.trend as string) || '30d';
 
-    if (userRole === 'SUPER_ADMIN') {
+    if (role === CANONICAL_ROLES.SUPER_ADMIN) {
       data = await getSuperAdminStats();
-    } else if (userRole === 'HR_MANAGER' || userRole === 'HR_ADMIN') {
+    } else if (role === CANONICAL_ROLES.HR_ADMIN) {
       data = await getHRManagerStats(trend, req.user);
+    } else if (role === CANONICAL_ROLES.MANAGER) {
+      data = await getManagerStats(req.user);
     } else {
       data = await getEmployeeStats(req.user?.id || '');
     }

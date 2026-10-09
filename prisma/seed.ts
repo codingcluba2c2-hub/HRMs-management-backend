@@ -6,15 +6,23 @@ const prisma = new PrismaClient();
 async function main() {
   const adminEmail = 'akhlaquerahman0786@gmail.com';
   
-  // Create SUPER_ADMIN Role
-  const superAdminRole = await prisma.role.upsert({
-    where: { name: 'SUPER_ADMIN' },
-    update: {},
-    create: {
-      name: 'SUPER_ADMIN',
-      description: 'Super Administrator Role',
-    },
-  });
+  // Create Canonical Roles
+  const canonicalRoles = [
+    { name: 'SUPER_ADMIN', description: 'Super Administrator Role' },
+    { name: 'HR_ADMIN', description: 'HR Administrator Role' },
+    { name: 'MANAGER', description: 'Department / Team Manager Role' },
+    { name: 'EMPLOYEES', description: 'Employee Role' }
+  ];
+
+  let superAdminRoleId = '';
+  for (const r of canonicalRoles) {
+    const role = await prisma.role.upsert({
+      where: { name: r.name },
+      update: { description: r.description },
+      create: r
+    });
+    if (r.name === 'SUPER_ADMIN') superAdminRoleId = role.id;
+  }
 
   // Check if admin already exists
   const existingAdmin = await prisma.user.findUnique({
@@ -30,14 +38,14 @@ async function main() {
         lastName: 'Admin',
         email: adminEmail,
         passwordHash,
-        roleId: superAdminRole.id
+        roleId: superAdminRoleId
       }
     });
     console.log('✅ Super Admin seeded successfully.');
   } else {
     await prisma.user.update({
       where: { email: adminEmail },
-      data: { roleId: superAdminRole.id }
+      data: { roleId: superAdminRoleId }
     });
     console.log('✅ Super Admin role re-assigned successfully.');
   }

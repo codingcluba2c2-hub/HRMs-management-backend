@@ -11,7 +11,8 @@ export const getLeaveSummary = async (req: AuthRequest, res: Response) => {
     const summary = await leaveService.getLeaveSummary(req.user, userRole);
     return res.status(200).json(new ApiResponse(true, "Leave summary fetched", summary));
   } catch (error: any) {
-    return res.status(500).json(new ApiResponse(false, error.message || "Failed to fetch summary"));
+    const status = error.message?.includes('Forbidden') ? 403 : 500;
+    return res.status(status).json(new ApiResponse(false, error.message || "Failed to fetch summary"));
   }
 };
 
@@ -25,14 +26,15 @@ export const getLeaveRequests = async (req: AuthRequest, res: Response) => {
     
     return res.status(200).json(new ApiResponse(true, "Leave requests fetched", requests));
   } catch (error: any) {
-    return res.status(500).json(new ApiResponse(false, error.message || "Failed to fetch requests"));
+    const status = error.message?.includes('Forbidden') ? 403 : 500;
+    return res.status(status).json(new ApiResponse(false, error.message || "Failed to fetch requests"));
   }
 };
 
 export const getMyLeaves = async (req: AuthRequest, res: Response) => {
   try {
     const filters = req.query;
-    const requests = await leaveService.getLeaveRequests(req.user?.id || '', 'EMPLOYEE', filters);
+    const requests = await leaveService.getLeaveRequests(req.user, 'EMPLOYEE', filters);
     return res.status(200).json(new ApiResponse(true, "My leaves fetched", requests));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message || "Failed to fetch my leaves"));
@@ -42,6 +44,10 @@ export const getMyLeaves = async (req: AuthRequest, res: Response) => {
 export const createLeaveRequest = async (req: AuthRequest, res: Response) => {
   try {
     const request = await leaveService.createLeaveRequest(req.user?.id || '', req.body);
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent((request as any)?.employee?.companyId || null, 'LEAVE_REQUEST', request.id);
+    } catch (e) {}
     return res.status(201).json(new ApiResponse(true, "Leave request created successfully", request));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message || "Failed to create request"));
@@ -53,10 +59,15 @@ export const updateLeaveStatus = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     const { status, comments } = req.body;
     
-    const request = await leaveService.processLeaveApproval(req.user?.id || '', id, status, comments);
+    const request = await leaveService.processLeaveApproval(req.user, id, status, comments);
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent((request as any)?.employee?.companyId || null, 'LEAVE_REQUEST', request.id);
+    } catch (e) {}
     return res.status(200).json(new ApiResponse(true, `Leave request ${status.toLowerCase()}`, request));
   } catch (error: any) {
-    return res.status(500).json(new ApiResponse(false, error.message || "Failed to update status"));
+    const statusCode = error.message?.includes('Forbidden') ? 403 : 500;
+    return res.status(statusCode).json(new ApiResponse(false, error.message || "Failed to update status"));
   }
 };
 
@@ -75,7 +86,8 @@ export const createLeaveType = async (req: AuthRequest, res: Response) => {
     const leaveType = await leaveService.createLeaveType(req.user, req.body);
     return res.status(201).json(new ApiResponse(true, "Leave type created successfully", leaveType));
   } catch (error: any) {
-    return res.status(400).json(new ApiResponse(false, error.message));
+    const status = error.message?.includes('Forbidden') ? 403 : 400;
+    return res.status(status).json(new ApiResponse(false, error.message));
   }
 };
 
@@ -85,7 +97,8 @@ export const updateLeaveType = async (req: AuthRequest, res: Response) => {
     const leaveType = await leaveService.updateLeaveType(req.user, id, req.body);
     return res.status(200).json(new ApiResponse(true, "Leave type updated successfully", leaveType));
   } catch (error: any) {
-    return res.status(400).json(new ApiResponse(false, error.message));
+    const status = error.message?.includes('Forbidden') ? 403 : 400;
+    return res.status(status).json(new ApiResponse(false, error.message));
   }
 };
 
@@ -95,7 +108,8 @@ export const deleteLeaveType = async (req: AuthRequest, res: Response) => {
     const deactivated = await leaveService.deleteLeaveType(req.user, id);
     return res.status(200).json(new ApiResponse(true, "Leave type deactivated successfully", deactivated));
   } catch (error: any) {
-    return res.status(400).json(new ApiResponse(false, error.message));
+    const status = error.message?.includes('Forbidden') ? 403 : 400;
+    return res.status(status).json(new ApiResponse(false, error.message));
   }
 };
 
@@ -112,10 +126,11 @@ export const getLeavePolicies = async (req: AuthRequest, res: Response) => {
 export const updateLeavePolicy = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const policy = await leaveService.updateLeavePolicy(req.user?.id || '', id, req.body);
+    const policy = await leaveService.updateLeavePolicy(req.user, id, req.body);
     return res.status(200).json(new ApiResponse(true, "Leave policy updated successfully", policy));
   } catch (error: any) {
-    return res.status(400).json(new ApiResponse(false, error.message));
+    const status = error.message?.includes('Forbidden') ? 403 : 400;
+    return res.status(status).json(new ApiResponse(false, error.message));
   }
 };
 
@@ -133,10 +148,11 @@ export const getAllEmployeeBalances = async (req: AuthRequest, res: Response) =>
 export const updateEmployeeBalance = async (req: AuthRequest, res: Response) => {
   try {
     const { employeeId } = req.params;
-    const updated = await leaveService.updateEmployeeBalance(req.user?.id || '', employeeId, req.body);
+    const updated = await leaveService.updateEmployeeBalance(req.user, employeeId, req.body);
     return res.status(200).json(new ApiResponse(true, "Employee leave balance updated successfully", updated));
   } catch (error: any) {
-    return res.status(400).json(new ApiResponse(false, error.message));
+    const status = error.message?.includes('Forbidden') ? 403 : 400;
+    return res.status(status).json(new ApiResponse(false, error.message));
   }
 };
 
@@ -144,7 +160,7 @@ export const updateEmployeeBalance = async (req: AuthRequest, res: Response) => 
 export const getLeaveLedgerLogs = async (req: AuthRequest, res: Response) => {
   try {
     const filters = req.query;
-    const logs = await leaveService.getLeaveLedgerLogs(filters);
+    const logs = await leaveService.getLeaveLedgerLogs(req.user, filters);
     return res.status(200).json(new ApiResponse(true, "Leave ledger logs fetched", logs));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
@@ -183,6 +199,7 @@ export const updateLeaveQuotas = async (req: AuthRequest, res: Response) => {
     const quotas = await leaveService.updateLeaveQuotas(req.body, req.user);
     return res.status(200).json(new ApiResponse(true, "Quotas updated", quotas));
   } catch (error: any) {
-    return res.status(500).json(new ApiResponse(false, error.message || "Failed to update quotas"));
+    const status = error.message?.includes('Forbidden') ? 403 : 500;
+    return res.status(status).json(new ApiResponse(false, error.message || "Failed to update quotas"));
   }
 };

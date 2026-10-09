@@ -1,6 +1,17 @@
 import { prisma } from '../lib/prisma';
 import { Prisma } from '@prisma/client';
 
+const employeeCache = new Map<string, { data: any; timestamp: number }>();
+const EMP_CACHE_TTL_MS = 15000; // 15-second in-memory cache
+
+export const invalidateEmployeeCache = (key?: string) => {
+  if (key) {
+    employeeCache.delete(key);
+  } else {
+    employeeCache.clear();
+  }
+};
+
 /**
  * Ensures an Employee profile exists for a given User ID or user context object.
  * If found, returns the Employee.
@@ -11,6 +22,14 @@ export const getOrCreateEmployeeForUser = async (userIdOrUser: string | any) => 
 
   let userId = typeof userIdOrUser === 'string' ? userIdOrUser : userIdOrUser?.id || userIdOrUser?.userId || userIdOrUser?.sub;
   let userEmail = typeof userIdOrUser === 'object' ? userIdOrUser?.email : undefined;
+
+  const cacheKey = userId || userEmail;
+  if (cacheKey) {
+    const cached = employeeCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < EMP_CACHE_TTL_MS)) {
+      return cached.data;
+    }
+  }
 
   // 1. Try finding employee by userId
   let employee = userId ? await prisma.employee.findFirst({
@@ -34,13 +53,6 @@ export const getOrCreateEmployeeForUser = async (userIdOrUser: string | any) => 
           data: { userId },
           include: { shift: true, department: true, designation: true }
         });
-        
-        // Invalidate Redis employee caches
-        const { default: redis } = await import('../lib/redis');
-        if (redis.status === 'ready') {
-          const keys = await redis.keys('employees:*');
-          if (keys.length > 0) await redis.del(keys);
-        }
       } catch (e) {}
     }
 
@@ -62,6 +74,9 @@ export const getOrCreateEmployeeForUser = async (userIdOrUser: string | any) => 
       }
     } catch (e) {}
 
+    if (cacheKey) {
+      employeeCache.set(cacheKey, { data: employee, timestamp: Date.now() });
+    }
     return employee;
   }
 
@@ -90,16 +105,10 @@ export const getOrCreateEmployeeForUser = async (userIdOrUser: string | any) => 
       data: { userId: user.id },
       include: { shift: true, department: true, designation: true }
     });
-    
-    // Invalidate Redis employee caches
-    try {
-      const { default: redis } = await import('../lib/redis');
-      if (redis.status === 'ready') {
-        const keys = await redis.keys('employees:*');
-        if (keys.length > 0) await redis.del(keys);
-      }
-    } catch (e) {}
 
+    if (cacheKey) {
+      employeeCache.set(cacheKey, { data: employee, timestamp: Date.now() });
+    }
     return employee;
   }
 
@@ -142,14 +151,8 @@ export const getOrCreateEmployeeForUser = async (userIdOrUser: string | any) => 
     include: { shift: true, department: true, designation: true }
   });
 
-  // Invalidate Redis employee caches
-  try {
-    const { default: redis } = await import('../lib/redis');
-    if (redis.status === 'ready') {
-      const keys = await redis.keys('employees:*');
-      if (keys.length > 0) await redis.del(keys);
-    }
-  } catch (e) {}
-
+  if (cacheKey) {
+    employeeCache.set(cacheKey, { data: employee, timestamp: Date.now() });
+  }
   return employee;
 };

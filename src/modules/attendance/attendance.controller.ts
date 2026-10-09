@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import ExcelJS from 'exceljs';
 import { ApiResponse } from '../../utils/ApiResponse';
 import { getTenantEmployeeFilter } from '../../utils/tenantFilter';
+import { getManagerScopedEmployeeFilter, resolveUserManagerScope } from '../../utils/managerScope';
 import {
   REQUIRED_WORKING_MINUTES,
   HALF_DAY_THRESHOLD_MINUTES,
@@ -290,6 +291,11 @@ export const punchIn = async (req: Request, res: Response) => {
       }
     });
 
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id);
+    } catch (e) {}
+
     return res.status(201).json(new ApiResponse(true, isResume ? "Resumed Work Successfully" : "Punched In Successfully", {
       ...newLog,
       currentState: "PUNCHED_IN",
@@ -382,6 +388,11 @@ export const punchOut = async (req: Request, res: Response) => {
         effectiveHours: Math.round((totalEffectiveSeconds / 3600) * 100) / 100
       }
     });
+
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id);
+    } catch (e) {}
 
     return res.status(200).json(new ApiResponse(true, "Punched Out Successfully", {
       id: openLog.id,
@@ -544,6 +555,11 @@ export const endBreak = async (req: Request, res: Response) => {
       data: { grossHours, effectiveHours }
     });
 
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id);
+    } catch (e) {}
+
     return res.status(200).json(new ApiResponse(true, "Break ended", updatedBreak));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
@@ -552,7 +568,7 @@ export const endBreak = async (req: Request, res: Response) => {
 
 export const getAllRecords = async (req: Request, res: Response) => {
   try {
-    const tenantFilter = getTenantEmployeeFilter((req as any).user);
+    const tenantFilter = await getManagerScopedEmployeeFilter((req as any).user);
     const records = await prisma.attendanceRecord.findMany({
       where: { employee: tenantFilter },
       include: { employee: { include: { shift: true } }, logs: true, breaks: true, shift: true },
@@ -710,6 +726,11 @@ export const createManual = async (req: Request, res: Response) => {
       });
     }
 
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(null, 'ATTENDANCE', record.id);
+    } catch (e) {}
+
     return res.status(201).json(new ApiResponse(true, "Manual record created", record));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
@@ -753,6 +774,11 @@ export const updateManual = async (req: Request, res: Response) => {
         });
       }
     }
+
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(null, 'ATTENDANCE', record.id);
+    } catch (e) {}
 
     return res.status(200).json(new ApiResponse(true, "Manual record updated", record));
   } catch (error: any) {
@@ -1101,9 +1127,32 @@ const getDateRangeByPreset = (preset?: string, customStart?: string, customEnd?:
 // Admin Summary Endpoint: GET /api/attendance/admin/summary
 export const getAdminSummary = async (req: Request, res: Response) => {
   try {
-    const { datePreset = 'TODAY', startDate, endDate, singleDate } = req.query as any;
+    const { datePreset = 'TODAY', startDate, endDate, singleDate, departmentId } = req.query as any;
+    const scope = await resolveUserManagerScope((req as any).user);
+
+    if (scope.isManager) {
+      if (scope.departmentIds.length === 0) {
+        return res.status(200).json(new ApiResponse(true, "Summary fetched", {
+          totalEmployees: 0,
+          presentToday: 0,
+          insufficientHours: 0,
+          halfDay: 0,
+          absent: 0,
+          currentlyWorking: 0,
+          onBreak: 0,
+          completedShift: 0
+        }));
+      }
+
+      if (departmentId && departmentId !== 'ALL' && departmentId !== 'all') {
+        if (!scope.departmentIds.includes(departmentId)) {
+          return res.status(403).json(new ApiResponse(false, "Forbidden: Department out of authorized scope"));
+        }
+      }
+    }
+
     const { start, end } = getDateRangeByPreset(datePreset, startDate, endDate, singleDate);
-    const tenantFilter = getTenantEmployeeFilter((req as any).user);
+    const tenantFilter = await getManagerScopedEmployeeFilter((req as any).user);
 
     const totalEmployees = await prisma.employee.count({
       where: tenantFilter
@@ -1177,13 +1226,31 @@ export const getAdminRecords = async (req: Request, res: Response) => {
       limit = 50
     } = req.query as any;
 
+    const scope = await resolveUserManagerScope((req as any).user);
+    if (scope.isManager) {
+      if (scope.departmentIds.length === 0) {
+        return res.status(200).json(new ApiResponse(true, "Admin attendance fetched", {
+          records: [],
+          pagination: { total: 0, page: 1, limit: 50, totalPages: 1 }
+        }));
+      }
+
+      if (departmentId && departmentId !== 'ALL' && departmentId !== 'all') {
+        if (!scope.departmentIds.includes(departmentId)) {
+          return res.status(403).json(new ApiResponse(false, "Forbidden: Department out of authorized scope"));
+        }
+      }
+    }
+
     const { start, end } = getDateRangeByPreset(datePreset, startDate, endDate, singleDate);
-    const tenantFilter = getTenantEmployeeFilter((req as any).user);
+    const tenantFilter = await getManagerScopedEmployeeFilter((req as any).user);
 
     // 1. Fetch all matching tenant employees
     const empWhere: any = { ...tenantFilter };
-    if (departmentId && departmentId !== 'ALL') {
+    if (departmentId && departmentId !== 'ALL' && departmentId !== 'all') {
       empWhere.departmentId = departmentId;
+    } else if (scope.isManager && scope.departmentIds.length > 0) {
+      empWhere.departmentId = { in: scope.departmentIds };
     }
     if (designationId && designationId !== 'ALL') {
       empWhere.designationId = designationId;
@@ -1353,8 +1420,9 @@ export const hrPunchIn = async (req: Request, res: Response) => {
 
     if (!employeeId) return res.status(400).json(new ApiResponse(false, "Employee ID is required"));
 
-    const employee = await prisma.employee.findUnique({ where: { id: employeeId } });
-    if (!employee) return res.status(404).json(new ApiResponse(false, "Employee not found"));
+    const scopedFilter = await getManagerScopedEmployeeFilter((req as any).user);
+    const employee = await prisma.employee.findFirst({ where: { id: employeeId, ...scopedFilter } });
+    if (!employee) return res.status(403).json(new ApiResponse(false, "Forbidden: You do not have permission to manage attendance for this employee"));
 
     // Check open log across records
     const existingOpenLog = await prisma.attendanceLog.findFirst({
@@ -1421,15 +1489,16 @@ export const hrPunchOut = async (req: Request, res: Response) => {
     const actorId = (req as any).user.id;
     const { employeeId, attendanceId, punchOutTime, reason } = req.body;
 
+    const scopedFilter = await getManagerScopedEmployeeFilter((req as any).user);
     const openLog = await prisma.attendanceLog.findFirst({
       where: {
-        attendance: employeeId ? { employeeId } : { id: attendanceId },
+        attendance: employeeId ? { employeeId, employee: scopedFilter } : { id: attendanceId, employee: scopedFilter },
         punchOut: null
       },
       include: { attendance: true }
     });
 
-    if (!openLog) return res.status(400).json(new ApiResponse(false, "No open attendance session found for employee"));
+    if (!openLog) return res.status(403).json(new ApiResponse(false, "No open attendance session found for authorized employee"));
 
     const now = punchOutTime ? new Date(punchOutTime) : new Date();
 
@@ -1504,15 +1573,16 @@ export const hrResumeWork = async (req: Request, res: Response) => {
     const actorId = (req as any).user.id;
     const { attendanceId, employeeId, reason } = req.body;
 
+    const scopedFilter = await getManagerScopedEmployeeFilter((req as any).user);
     let record = null;
     if (attendanceId) {
-      record = await prisma.attendanceRecord.findUnique({ where: { id: attendanceId } });
+      record = await prisma.attendanceRecord.findFirst({ where: { id: attendanceId, employee: scopedFilter } });
     } else if (employeeId) {
       const today = getTodayDate();
-      record = await prisma.attendanceRecord.findUnique({ where: { employeeId_date: { employeeId, date: today } } });
+      record = await prisma.attendanceRecord.findFirst({ where: { employeeId, date: today, employee: scopedFilter } });
     }
 
-    if (!record) return res.status(404).json(new ApiResponse(false, "Attendance record not found"));
+    if (!record) return res.status(403).json(new ApiResponse(false, "Attendance record not found or unauthorized"));
 
     const newLog = await prisma.attendanceLog.create({
       data: {
@@ -1554,10 +1624,11 @@ export const hrCorrectAttendance = async (req: Request, res: Response) => {
       return res.status(400).json(new ApiResponse(false, "Reason for correction is required for auditability"));
     }
 
+    const scopedFilter = await getManagerScopedEmployeeFilter((req as any).user);
     let record = null;
     if (attendanceRecordId) {
-      record = await prisma.attendanceRecord.findUnique({
-        where: { id: attendanceRecordId },
+      record = await prisma.attendanceRecord.findFirst({
+        where: { id: attendanceRecordId, employee: scopedFilter },
         include: { logs: true }
       });
     }
@@ -1571,13 +1642,13 @@ export const hrCorrectAttendance = async (req: Request, res: Response) => {
         targetDate = new Date(date);
         targetDate.setHours(0, 0, 0, 0);
       }
-      record = await prisma.attendanceRecord.findUnique({
-        where: { employeeId_date: { employeeId, date: targetDate } },
+      record = await prisma.attendanceRecord.findFirst({
+        where: { employeeId, date: targetDate, employee: scopedFilter },
         include: { logs: true }
       });
     }
 
-    if (!record) return res.status(404).json(new ApiResponse(false, "Attendance record not found"));
+    if (!record) return res.status(403).json(new ApiResponse(false, "Attendance record not found or unauthorized"));
 
     const pIn = punchIn ? new Date(punchIn) : null;
     const pOut = punchOut ? new Date(punchOut) : null;
@@ -1690,13 +1761,32 @@ export const exportAdminExcel = async (req: Request, res: Response) => {
       breakType = 'ALL'
     } = req.query as any;
 
+    const scope = await resolveUserManagerScope((req as any).user);
+    if (scope.isManager) {
+      if (scope.departmentIds.length === 0) {
+        return res.status(403).json(new ApiResponse(false, "Forbidden: No authorized department assigned"));
+      }
+
+      if (departmentId && departmentId !== 'ALL' && departmentId !== 'all') {
+        if (!scope.departmentIds.includes(departmentId)) {
+          return res.status(403).json(new ApiResponse(false, "Forbidden: Department out of authorized scope"));
+        }
+      }
+    }
+
     const { start, end } = getDateRangeByPreset(datePreset, startDate, endDate, singleDate);
+    const tenantFilter = await getManagerScopedEmployeeFilter((req as any).user);
 
     const whereClause: any = {
-      date: { gte: start, lte: end }
+      date: { gte: start, lte: end },
+      employee: { ...tenantFilter }
     };
 
-    if (departmentId && departmentId !== 'ALL') whereClause.employee = { ...whereClause.employee, departmentId };
+    if (departmentId && departmentId !== 'ALL' && departmentId !== 'all') {
+      whereClause.employee = { ...whereClause.employee, departmentId };
+    } else if (scope.isManager && scope.departmentIds.length > 0) {
+      whereClause.employee = { ...whereClause.employee, departmentId: { in: scope.departmentIds } };
+    }
     if (designationId && designationId !== 'ALL') whereClause.employee = { ...whereClause.employee, designationId };
     if (shiftId && shiftId !== 'ALL') whereClause.shiftId = shiftId;
     if (search && search.trim()) {

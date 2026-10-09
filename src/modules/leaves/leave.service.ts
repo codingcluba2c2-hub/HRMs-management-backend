@@ -1,5 +1,6 @@
 import { prisma } from '../../lib/prisma';
 import { getTenantEmployeeFilter, getTenantLeaveTypeFilter, getTenantHolidayFilter, getTenantCreatorId } from '../../utils/tenantFilter';
+import { getManagerScopedEmployeeFilter, resolveUserManagerScope } from '../../utils/managerScope';
 
 // Ensure default master leave types exist in database
 export const ensureDefaultLeaveTypes = async () => {
@@ -168,7 +169,8 @@ export const getLeaveSummary = async (userContext: any, role: string) => {
       ]
     };
   } else {
-    const tenantFilter = getTenantEmployeeFilter(typeof userContext === 'string' ? { id: userContext, role } : userContext);
+    const userObj = typeof userContext === 'string' ? { id: userContext, role } : userContext;
+    const tenantFilter = await getManagerScopedEmployeeFilter(userObj);
     const totalEmployees = await prisma.employee.count({
       where: tenantFilter
     });
@@ -237,7 +239,8 @@ export const getLeaveSummary = async (userContext: any, role: string) => {
 // Get Leave Requests with filters
 export const getLeaveRequests = async (userContext: any, role: string, filters: any) => {
   const userObj = typeof userContext === 'string' ? { id: userContext, role } : userContext;
-  const tenantFilter = getTenantEmployeeFilter(userObj);
+  const scope = await resolveUserManagerScope(userObj);
+  const tenantFilter = await getManagerScopedEmployeeFilter(userObj);
   let whereClause: any = {};
   const normalizedRole = (role || '').toUpperCase().trim();
   
@@ -246,12 +249,22 @@ export const getLeaveRequests = async (userContext: any, role: string, filters: 
     if (!employee) return []; // Return empty array if user has no employee profile
     whereClause.employeeId = employee.id;
   } else {
-    whereClause.employee = { ...tenantFilter };
+    if (scope.isManager) {
+      if (scope.departmentIds.length === 0) return [];
+      if (filters.departmentId && filters.departmentId !== 'ALL') {
+        if (!scope.departmentIds.includes(filters.departmentId)) return [];
+        whereClause.employee = { ...tenantFilter, departmentId: filters.departmentId };
+      } else {
+        whereClause.employee = { ...tenantFilter, departmentId: { in: scope.departmentIds } };
+      }
+    } else {
+      whereClause.employee = { ...tenantFilter };
+      if (filters.departmentId && filters.departmentId !== 'ALL') {
+        whereClause.employee.departmentId = filters.departmentId;
+      }
+    }
     if (filters.employeeId) {
       whereClause.employeeId = filters.employeeId;
-    }
-    if (filters.departmentId && filters.departmentId !== 'ALL') {
-      whereClause.employee.departmentId = filters.departmentId;
     }
     if (filters.designationId && filters.designationId !== 'ALL') {
       whereClause.employee.designationId = filters.designationId;
@@ -356,7 +369,7 @@ export const createLeaveRequest = async (userId: string, data: any) => {
 };
 
 // Process Approval / Rejection / Cancellation
-export const processLeaveApproval = async (userId: string, leaveId: string, action: string, comments?: string) => {
+export const processLeaveApproval = async (userContext: any, leaveId: string, action: string, comments?: string) => {
   const validActions = ['APPROVED', 'REJECTED', 'CANCELLED'];
   if (!validActions.includes(action)) throw new Error("Invalid action");
 
@@ -367,9 +380,18 @@ export const processLeaveApproval = async (userId: string, leaveId: string, acti
 
   if (!existingRequest) throw new Error("Leave request not found");
 
+  const scope = await resolveUserManagerScope(userContext);
+  if (scope.isManager) {
+    if (!existingRequest.employee?.departmentId || !scope.departmentIds.includes(existingRequest.employee.departmentId)) {
+      throw new Error("Forbidden: Target employee out of authorized department scope");
+    }
+  }
+
   if (action === 'REJECTED' && (!comments || !comments.trim())) {
     throw new Error("Rejection reason is required when rejecting a leave request");
   }
+
+  const userId = typeof userContext === 'string' ? userContext : userContext?.id || '';
 
   const request = await prisma.leaveRequest.update({
     where: { id: leaveId },
@@ -492,6 +514,11 @@ export const getLeaveTypes = async (userContext?: any) => {
 };
 
 export const createLeaveType = async (userContext: any, data: any) => {
+  const scope = await resolveUserManagerScope(userContext);
+  if (scope.isManager) {
+    throw new Error("Forbidden: Only HR Admin or Super Admin can create leave types");
+  }
+
   if (!data.name || !data.code) throw new Error("Leave type name and code are required");
   
   const creatorId = await getTenantCreatorId(userContext);
@@ -535,6 +562,11 @@ export const createLeaveType = async (userContext: any, data: any) => {
 };
 
 export const updateLeaveType = async (userContext: any, id: string, data: any) => {
+  const scope = await resolveUserManagerScope(userContext);
+  if (scope.isManager) {
+    throw new Error("Forbidden: Only HR Admin or Super Admin can update leave types");
+  }
+
   const existing = await prisma.leaveType.findUnique({ where: { id } });
   if (!existing) throw new Error("Leave type not found");
 
@@ -603,6 +635,11 @@ export const updateLeaveType = async (userContext: any, id: string, data: any) =
 };
 
 export const deleteLeaveType = async (userContext: any, id: string) => {
+  const scope = await resolveUserManagerScope(userContext);
+  if (scope.isManager) {
+    throw new Error("Forbidden: Only HR Admin or Super Admin can delete leave types");
+  }
+
   const existing = await prisma.leaveType.findUnique({ where: { id } });
   if (!existing) throw new Error("Leave type not found");
 
@@ -666,7 +703,13 @@ export const getLeavePolicies = async () => {
   return await prisma.leavePolicy.findMany({ orderBy: { name: 'asc' } });
 };
 
-export const updateLeavePolicy = async (userId: string, id: string, data: any) => {
+export const updateLeavePolicy = async (userContext: any, id: string, data: any) => {
+  const scope = await resolveUserManagerScope(userContext);
+  if (scope.isManager) {
+    throw new Error("Forbidden: Only HR Admin or Super Admin can update leave policies");
+  }
+
+  const userId = typeof userContext === 'string' ? userContext : userContext?.id || '';
   const policy = await prisma.leavePolicy.update({
     where: { id },
     data: {
@@ -697,7 +740,17 @@ export const getAllEmployeeBalances = async (userContext: any, filters?: any) =>
   const actualFilters = filters || (typeof userContext === 'object' && !userContext.id ? userContext : {});
   const userObj = typeof userContext === 'object' && userContext?.id ? userContext : (typeof filters === 'object' && filters?.user ? filters.user : null);
 
-  const tenantFilter = getTenantEmployeeFilter(userObj);
+  const scope = await resolveUserManagerScope(userObj);
+  if (scope.isManager && scope.departmentIds.length === 0) {
+    return [];
+  }
+  if (scope.isManager && actualFilters.departmentId && actualFilters.departmentId !== 'ALL') {
+    if (!scope.departmentIds.includes(actualFilters.departmentId)) {
+      return [];
+    }
+  }
+
+  const tenantFilter = await getManagerScopedEmployeeFilter(userObj);
   let where: any = { ...tenantFilter };
 
   if (actualFilters.search) {
@@ -717,6 +770,8 @@ export const getAllEmployeeBalances = async (userContext: any, filters?: any) =>
 
   if (actualFilters.departmentId && actualFilters.departmentId !== 'ALL') {
     where.departmentId = actualFilters.departmentId;
+  } else if (scope.isManager && scope.departmentIds.length > 0) {
+    where.departmentId = { in: scope.departmentIds };
   }
   if (actualFilters.designationId && actualFilters.designationId !== 'ALL') {
     where.designationId = actualFilters.designationId;
@@ -780,7 +835,13 @@ export const getAllEmployeeBalances = async (userContext: any, filters?: any) =>
   });
 };
 
-export const updateEmployeeBalance = async (userId: string, employeeId: string, data: any) => {
+export const updateEmployeeBalance = async (userContext: any, employeeId: string, data: any) => {
+  const scope = await resolveUserManagerScope(userContext);
+  if (scope.isManager) {
+    throw new Error("Forbidden: Only HR Admin or Super Admin can adjust leave balances");
+  }
+
+  const userId = typeof userContext === 'string' ? userContext : userContext?.id || '';
   const { annual, casual, medical, earned, compOff, reason } = data;
   if (!reason || !reason.trim()) {
     throw new Error("Reason for balance adjustment is required");
@@ -833,9 +894,14 @@ export const updateEmployeeBalance = async (userId: string, employeeId: string, 
 };
 
 // AUDIT / LEDGER LOGS
-export const getLeaveLedgerLogs = async (filters: any) => {
-  let where: any = {};
-  if (filters.employeeId) where.employeeId = filters.employeeId;
+export const getLeaveLedgerLogs = async (userContext: any, filters?: any) => {
+  const actualFilters = filters || {};
+  const tenantFilter = await getManagerScopedEmployeeFilter(userContext);
+  let where: any = {
+    employee: tenantFilter
+  };
+
+  if (actualFilters.employeeId) where.employeeId = actualFilters.employeeId;
 
   return await prisma.leaveLedger.findMany({
     where,
@@ -867,12 +933,19 @@ export const getLeaveAnalytics = async () => {
 };
 
 export const getLeaveCalendar = async (userContext?: any, filters?: any) => {
-  const tenantFilter = getTenantEmployeeFilter(userContext);
+  const scope = await resolveUserManagerScope(userContext);
+  if (scope.isManager && filters?.departmentId && filters.departmentId !== 'ALL' && !scope.departmentIds.includes(filters.departmentId)) {
+    return { upcomingLeaves: [], holidays: [] };
+  }
+
+  const tenantFilter = await getManagerScopedEmployeeFilter(userContext);
   const tenantHolidayFilter = await getTenantHolidayFilter(userContext);
 
   const empWhere: any = { ...tenantFilter };
   if (filters?.departmentId && filters.departmentId !== 'ALL') {
     empWhere.departmentId = filters.departmentId;
+  } else if (scope.isManager && scope.departmentIds.length > 0) {
+    empWhere.departmentId = { in: scope.departmentIds };
   }
   if (filters?.designationId && filters.designationId !== 'ALL') {
     empWhere.designationId = filters.designationId;

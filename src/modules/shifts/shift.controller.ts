@@ -3,11 +3,12 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../utils/ApiResponse';
 import { invalidateCachePattern } from '../../lib/redis';
 import { getTenantShiftFilter, getTenantEmployeeFilter } from '../../utils/tenantFilter';
+import { getManagerScopedEmployeeFilter, resolveUserManagerScope } from '../../utils/managerScope';
 
 export const getAll = async (req: Request, res: Response) => {
   try {
     const tenantShiftFilter = await getTenantShiftFilter((req as any).user);
-    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
+    const tenantEmpFilter = await getManagerScopedEmployeeFilter((req as any).user);
 
     let shifts = await prisma.shift.findMany({
       where: tenantShiftFilter,
@@ -88,6 +89,11 @@ export const getAll = async (req: Request, res: Response) => {
 
 export const create = async (req: Request, res: Response) => {
   try {
+    const scope = await resolveUserManagerScope((req as any).user);
+    if (scope.isManager) {
+      return res.status(403).json(new ApiResponse(false, "Forbidden: Only HR Admin or Super Admin can create shift templates"));
+    }
+
     const userId = (req as any).user?.id;
     const shiftData = {
       ...req.body,
@@ -104,6 +110,11 @@ export const create = async (req: Request, res: Response) => {
 
 export const update = async (req: Request, res: Response) => {
   try {
+    const scope = await resolveUserManagerScope((req as any).user);
+    if (scope.isManager) {
+      return res.status(403).json(new ApiResponse(false, "Forbidden: Only HR Admin or Super Admin can update shift templates"));
+    }
+
     const { id } = req.params;
     const tenantShiftFilter = await getTenantShiftFilter((req as any).user);
 
@@ -123,6 +134,11 @@ export const update = async (req: Request, res: Response) => {
 
 export const remove = async (req: Request, res: Response) => {
   try {
+    const scope = await resolveUserManagerScope((req as any).user);
+    if (scope.isManager) {
+      return res.status(403).json(new ApiResponse(false, "Forbidden: Only HR Admin or Super Admin can delete shift templates"));
+    }
+
     const { id } = req.params;
     const tenantShiftFilter = await getTenantShiftFilter((req as any).user);
 
@@ -145,7 +161,18 @@ export const remove = async (req: Request, res: Response) => {
 export const getRoster = async (req: Request, res: Response) => {
   try {
     const { departmentId, search, shiftId } = req.query;
-    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
+
+    const scope = await resolveUserManagerScope((req as any).user);
+    if (scope.isManager) {
+      if (scope.departmentIds.length === 0) {
+        return res.status(200).json(new ApiResponse(true, "Employee roster fetched successfully", []));
+      }
+      if (departmentId && departmentId !== 'ALL' && !scope.departmentIds.includes(departmentId as string)) {
+        return res.status(403).json(new ApiResponse(false, "Forbidden: Department out of authorized scope"));
+      }
+    }
+
+    const tenantEmpFilter = await getManagerScopedEmployeeFilter((req as any).user);
 
     const where: any = { 
       ...tenantEmpFilter
@@ -153,6 +180,8 @@ export const getRoster = async (req: Request, res: Response) => {
 
     if (departmentId && departmentId !== 'ALL') {
       where.departmentId = departmentId as string;
+    } else if (scope.isManager && scope.departmentIds.length > 0) {
+      where.departmentId = { in: scope.departmentIds };
     }
 
     if (shiftId && shiftId !== 'ALL') {
@@ -207,7 +236,23 @@ export const assignShift = async (req: Request, res: Response) => {
       return res.status(400).json(new ApiResponse(false, "employeeIds array is required"));
     }
 
-    const tenantEmpFilter = getTenantEmployeeFilter((req as any).user);
+    const scope = await resolveUserManagerScope((req as any).user);
+    if (scope.isManager) {
+      const unauthorizedCount = await prisma.employee.count({
+        where: {
+          id: { in: employeeIds },
+          OR: [
+            { departmentId: { notIn: scope.departmentIds } },
+            { departmentId: null }
+          ]
+        }
+      });
+      if (unauthorizedCount > 0) {
+        return res.status(403).json(new ApiResponse(false, "Forbidden: Target employee out of authorized department scope"));
+      }
+    }
+
+    const tenantEmpFilter = await getManagerScopedEmployeeFilter((req as any).user);
 
     await prisma.employee.updateMany({
       where: {

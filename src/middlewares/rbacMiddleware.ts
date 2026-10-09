@@ -1,13 +1,15 @@
 import { Response, NextFunction } from 'express';
 import { AuthRequest } from './authMiddleware';
-import redis from '../lib/redis';
 import { prisma } from '../lib/prisma';
+import { normalizeRole, CANONICAL_ROLES } from '../utils/roleConstants';
 
-// Role-Based Access Control (RBAC) middleware: Checks if a user has the right permission level to access a route
-export const authorizeRoles = (...roles: string[]) => {
+/**
+ * Role-Based Access Control (RBAC) middleware: Checks if a user has one of the allowed canonical roles
+ */
+export const authorizeRoles = (...allowedRoles: string[]) => {
   return async (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
-      return res.status(403).json({ success: false, message: 'Forbidden: Insufficient role' });
+      return res.status(403).json({ success: false, message: 'Forbidden: Unauthenticated user' });
     }
 
     let roleStr = typeof req.user.role === 'string' 
@@ -26,18 +28,14 @@ export const authorizeRoles = (...roles: string[]) => {
       }
     }
 
-    if (!roleStr) {
-      return res.status(403).json({ success: false, message: 'Forbidden: Insufficient role' });
-    }
+    const currentNormalized = normalizeRole(roleStr);
+    const targetAllowed = allowedRoles.map(r => normalizeRole(r));
 
-    const userRoleNormalized = roleStr.toUpperCase().replace(/[\s_]+/g, '');
-    const allowedNormalized = roles.map(r => r.toUpperCase().replace(/[\s_]+/g, ''));
-
-    const isAllowed = allowedNormalized.includes(userRoleNormalized)
-      || (allowedNormalized.some(r => r.includes('HR') || r.includes('ADMIN')) && (userRoleNormalized.includes('HR') || userRoleNormalized.includes('ADMIN')));
+    // SUPER_ADMIN has access to administrative routes
+    const isAllowed = currentNormalized === CANONICAL_ROLES.SUPER_ADMIN || targetAllowed.includes(currentNormalized);
 
     if (!isAllowed) {
-      return res.status(403).json({ success: false, message: 'Forbidden: Insufficient role' });
+      return res.status(403).json({ success: false, message: 'Forbidden: Insufficient role privileges' });
     }
 
     next();

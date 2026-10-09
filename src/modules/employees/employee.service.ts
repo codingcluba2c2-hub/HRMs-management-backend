@@ -3,6 +3,8 @@ import bcrypt from 'bcryptjs';
 import { decrypt } from '../../utils/encryption';
 import { withCache } from '../../lib/redis';
 
+import { CANONICAL_ROLES } from '../../utils/roleConstants';
+
 export class EmployeeService {
   static async createEmployee(data: any, hrAdminId: string | undefined) {
     const existing = await prisma.employee.findFirst({
@@ -13,16 +15,16 @@ export class EmployeeService {
       throw new Error('Employee with this email or ID already exists');
     }
 
+    const hrAdmin = hrAdminId ? await prisma.user.findUnique({ where: { id: hrAdminId } }) : null;
+
     let userId = null;
     if (data.password) {
       const passwordHash = await bcrypt.hash(data.password, 10);
       
-      let employeeRole = await prisma.role.findUnique({ where: { name: 'EMPLOYEE' } });
+      let employeeRole = await prisma.role.findUnique({ where: { name: CANONICAL_ROLES.EMPLOYEES } });
       if (!employeeRole) {
-        employeeRole = await prisma.role.create({ data: { name: 'EMPLOYEE', description: 'Regular employee' } });
+        employeeRole = await prisma.role.create({ data: { name: CANONICAL_ROLES.EMPLOYEES, description: 'Regular employee' } });
       }
-
-      const hrAdmin = hrAdminId ? await prisma.user.findUnique({ where: { id: hrAdminId } }) : null;
 
       const newUser = await prisma.user.create({
         data: {
@@ -32,6 +34,7 @@ export class EmployeeService {
           phone: data.phone,
           passwordHash,
           roleId: employeeRole.id,
+          companyId: hrAdmin?.companyId || null,
           companyName: hrAdmin?.companyName || null,
           companyWebsite: hrAdmin?.companyWebsite || null,
           companyAddress: hrAdmin?.companyAddress || null,
@@ -45,6 +48,7 @@ export class EmployeeService {
       data: {
         userId,
         createdById: hrAdminId,
+        companyId: hrAdmin?.companyId || null,
         employeeId: data.employeeId,
         firstName: data.firstName,
         lastName: data.lastName,
@@ -67,6 +71,13 @@ export class EmployeeService {
       const keys = await redis.keys('employees:*');
       if (keys.length > 0) await redis.del(keys);
     }
+
+    // Trigger asynchronous Google Sheets synchronization
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'EMPLOYEE', employee.id);
+    } catch (e) {}
+
     return employee;
   }
 
@@ -74,9 +85,9 @@ export class EmployeeService {
     let successCount = 0;
     const errors: any[] = [];
 
-    let employeeRole = await prisma.role.findUnique({ where: { name: 'EMPLOYEE' } });
+    let employeeRole = await prisma.role.findUnique({ where: { name: CANONICAL_ROLES.EMPLOYEES } });
     if (!employeeRole) {
-      employeeRole = await prisma.role.create({ data: { name: 'EMPLOYEE', description: 'Regular employee' } });
+      employeeRole = await prisma.role.create({ data: { name: CANONICAL_ROLES.EMPLOYEES, description: 'Regular employee' } });
     }
 
     const hrAdmin = hrAdminId ? await prisma.user.findUnique({ where: { id: hrAdminId } }) : null;
@@ -278,6 +289,12 @@ export class EmployeeService {
       const keys = await redis.keys('employees:*');
       if (keys.length > 0) await redis.del(keys);
     }
+
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(updated.companyId, 'EMPLOYEE', updated.id);
+    } catch (e) {}
+
     return updated;
   }
 
@@ -286,7 +303,7 @@ export class EmployeeService {
     if (!employee) throw new Error('Employee not found');
 
     // Update status to TERMINATED
-    await prisma.employee.update({
+    const updated = await prisma.employee.update({
       where: { id },
       data: { status: 'TERMINATED' }
     });
@@ -297,6 +314,11 @@ export class EmployeeService {
       const keys = await redis.keys('employees:*');
       if (keys.length > 0) await redis.del(keys);
     }
+
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(updated.companyId, 'EMPLOYEE', updated.id);
+    } catch (e) {}
 
     return true;
   }
@@ -435,5 +457,181 @@ export class EmployeeService {
       default:
         throw new Error('Invalid action');
     }
+  }
+
+  static async assignManagerRole(employeeId: string, departmentIds: string[] = [], hrAdminId?: string) {
+    const emp = await prisma.employee.findUnique({
+      where: { id: employeeId },
+      include: { user: { include: { role: true } } }
+    });
+
+    if (!emp) throw new Error('Employee not found');
+
+    let managerRole = await prisma.role.findUnique({ where: { name: CANONICAL_ROLES.MANAGER } });
+    if (!managerRole) {
+      managerRole = await prisma.role.create({ data: { name: CANONICAL_ROLES.MANAGER, description: 'Department & Team Manager Role' } });
+    }
+
+    // Atomic transaction to update User role and set initial ManagerScope
+    await prisma.$transaction(async (tx) => {
+      let targetUserId = emp.userId;
+      if (!targetUserId) {
+        const passwordHash = await bcrypt.hash('Temp@1234', 10);
+        const newUser = await tx.user.create({
+          data: {
+            firstName: emp.firstName,
+            lastName: emp.lastName,
+            email: emp.email,
+            passwordHash,
+            roleId: managerRole!.id,
+            companyId: emp.companyId || null
+          }
+        });
+        targetUserId = newUser.id;
+        await tx.employee.update({
+          where: { id: emp.id },
+          data: { userId: newUser.id }
+        });
+      } else {
+        await tx.user.update({
+          where: { id: targetUserId },
+          data: { roleId: managerRole!.id }
+        });
+      }
+
+      // Add ManagerScope for employee's assigned department or requested departments
+      const deptsToScope = new Set<string>();
+      if (emp.departmentId) deptsToScope.add(emp.departmentId);
+      departmentIds.forEach(id => deptsToScope.add(id));
+
+      for (const deptId of Array.from(deptsToScope)) {
+        const existingScope = await tx.managerScope.findFirst({
+          where: {
+            managerId: emp.id,
+            departmentId: deptId
+          }
+        });
+
+        if (!existingScope) {
+          await tx.managerScope.create({
+            data: {
+              managerId: emp.id,
+              departmentId: deptId
+            }
+          });
+        }
+      }
+    });
+
+    return { success: true, message: `Successfully assigned ${emp.firstName} ${emp.lastName} as Manager.` };
+  }
+
+  static async removeManagerRole(employeeId: string, reassignToManagerId?: string, hrAdminId?: string) {
+    const emp = await prisma.employee.findUnique({
+      where: { id: employeeId },
+      include: {
+        subordinates: { select: { id: true, firstName: true, lastName: true } },
+        user: true
+      }
+    });
+
+    if (!emp) throw new Error('Employee not found');
+
+    // Pre-check direct subordinates
+    if (emp.subordinates.length > 0 && !reassignToManagerId) {
+      return {
+        requiresReassignment: true,
+        subordinatesCount: emp.subordinates.length,
+        subordinates: emp.subordinates,
+        message: `Manager ${emp.firstName} ${emp.lastName} has ${emp.subordinates.length} direct reports. Please select a replacement reporting manager before demoting.`
+      };
+    }
+
+    let employeeRole = await prisma.role.findUnique({ where: { name: CANONICAL_ROLES.EMPLOYEES } });
+    if (!employeeRole) {
+      employeeRole = await prisma.role.create({ data: { name: CANONICAL_ROLES.EMPLOYEES, description: 'Employee Role' } });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Reassign subordinates if replacement manager provided
+      if (emp.subordinates.length > 0 && reassignToManagerId) {
+        await tx.employee.updateMany({
+          where: { managerId: emp.id },
+          data: { managerId: reassignToManagerId }
+        });
+      }
+
+      // Remove ManagerScope entries
+      await tx.managerScope.deleteMany({
+        where: { managerId: emp.id }
+      });
+
+      // Revoke Manager role, set to EMPLOYEES
+      if (emp.userId) {
+        await tx.user.update({
+          where: { id: emp.userId },
+          data: { roleId: employeeRole!.id }
+        });
+      }
+    });
+
+    return {
+      success: true,
+      requiresReassignment: false,
+      message: `Successfully changed ${emp.firstName} ${emp.lastName} back to Employee role.`
+    };
+  }
+
+  static async getManagerScope(employeeId: string) {
+    const emp = await prisma.employee.findUnique({
+      where: { id: employeeId },
+      include: {
+        department: true,
+        designation: true,
+        managerScopes: {
+          include: { department: true, designation: true }
+        },
+        subordinates: {
+          select: { id: true, employeeId: true, firstName: true, lastName: true, email: true, department: { select: { name: true } }, designation: { select: { name: true } } }
+        }
+      }
+    });
+
+    if (!emp) throw new Error('Employee not found');
+
+    return {
+      employeeId: emp.id,
+      name: `${emp.firstName} ${emp.lastName}`,
+      subordinatesCount: emp.subordinates.length,
+      subordinates: emp.subordinates,
+      assignedDepartment: emp.department,
+      scopes: emp.managerScopes
+    };
+  }
+
+  static async updateManagerScope(employeeId: string, departmentIds: string[] = [], designationIds: string[] = []) {
+    await prisma.$transaction(async (tx) => {
+      await tx.managerScope.deleteMany({ where: { managerId: employeeId } });
+
+      for (const dId of departmentIds) {
+        await tx.managerScope.create({
+          data: {
+            managerId: employeeId,
+            departmentId: dId
+          }
+        });
+      }
+
+      for (const desId of designationIds) {
+        await tx.managerScope.create({
+          data: {
+            managerId: employeeId,
+            designationId: desId
+          }
+        });
+      }
+    });
+
+    return { success: true, message: 'Manager scope updated successfully.' };
   }
 }

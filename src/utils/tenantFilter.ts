@@ -1,18 +1,25 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { getOrCreateEmployeeForUser } from './employeeUtils';
+import { normalizeRole, CANONICAL_ROLES } from './roleConstants';
+import { getManagerScopedEmployeeFilter, resolveUserManagerScope } from './managerScope';
 
-export const getTenantEmployeeFilter = (user?: { id?: string; userId?: string; role?: string; email?: string; companyName?: string }): Prisma.EmployeeWhereInput => {
+export const getTenantEmployeeFilterAsync = async (user?: any): Promise<Prisma.EmployeeWhereInput> => {
+  return await getManagerScopedEmployeeFilter(user);
+};
+
+export const getTenantEmployeeFilter = (user?: { id?: string; userId?: string; role?: string; email?: string; companyName?: string; companyId?: string }): Prisma.EmployeeWhereInput => {
   const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
-  const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+  const role = normalizeRole(rawRole);
 
-  if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
+  if (role === CANONICAL_ROLES.SUPER_ADMIN) {
     return { isDeleted: false };
   }
 
   const userId = user?.id || (user as any)?.userId || (user as any)?.sub || 'NO_USER';
   const email = user?.email;
   const companyName = user?.companyName;
+  const companyId = user?.companyId;
 
   const matchConditions: Prisma.EmployeeWhereInput[] = [
     { createdById: userId },
@@ -24,20 +31,22 @@ export const getTenantEmployeeFilter = (user?: { id?: string; userId?: string; r
   }
 
   // Regular employees only see their own profile
-  if (normalizedRole === 'EMPLOYEE' || normalizedRole === 'USER') {
+  if (role === CANONICAL_ROLES.EMPLOYEES) {
     return {
       isDeleted: false,
       OR: matchConditions,
       NOT: [
-        { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' as const } },
-        { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } },
+        { email: { equals: 'superadmin@hrmspro.com', mode: 'insensitive' as const } },
+        { user: { role: { name: 'SUPER_ADMIN' } } },
         { employeeId: { in: ['EMP-SUPER-001', 'SUPER-ADMIN'] } }
       ]
     };
   }
 
-  // HR Managers, Admins, Managers see employees belonging to their Company / Tenant
-  if (companyName && companyName.trim()) {
+  // HR Admin sees employees belonging to their Company / Tenant
+  if (companyId) {
+    matchConditions.push({ companyId });
+  } else if (companyName && companyName.trim()) {
     matchConditions.push({
       user: {
         companyName: { equals: companyName.trim(), mode: 'insensitive' as const }
@@ -49,8 +58,8 @@ export const getTenantEmployeeFilter = (user?: { id?: string; userId?: string; r
     isDeleted: false,
     OR: matchConditions,
     NOT: [
-      { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' as const } },
-      { user: { role: { name: { in: ['SUPER_ADMIN', 'SUPER_ADMINISTRATOR', 'Super Admin'] } } } },
+      { email: { equals: 'superadmin@hrmspro.com', mode: 'insensitive' as const } },
+      { user: { role: { name: 'SUPER_ADMIN' } } },
       { employeeId: { in: ['EMP-SUPER-001', 'SUPER-ADMIN'] } }
     ]
   };
@@ -60,9 +69,9 @@ export const getTenantCreatorId = async (user?: any): Promise<string> => {
   if (!user) return 'NO_USER';
   const userId = typeof user === 'string' ? user : user?.id || user?.userId || user?.sub || 'NO_USER';
   const rawRole = typeof user === 'string' ? '' : typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
-  const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+  const role = normalizeRole(rawRole);
 
-  if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
+  if (role === CANONICAL_ROLES.SUPER_ADMIN) {
     return userId;
   }
 
@@ -70,13 +79,13 @@ export const getTenantCreatorId = async (user?: any): Promise<string> => {
   try {
     const emp = await getOrCreateEmployeeForUser(user);
     if (emp && emp.createdById) {
-      if (emp.createdById === userId && (normalizedRole === 'EMPLOYEE' || normalizedRole === 'USER')) {
+      if (emp.createdById === userId && role === CANONICAL_ROLES.EMPLOYEES) {
         const companyName = user?.companyName;
         if (companyName) {
           const hrUser = await prisma.user.findFirst({
             where: {
               companyName: { equals: companyName, mode: 'insensitive' },
-              role: { name: { in: ['HR_MANAGER', 'HR_ADMIN', 'ADMIN', 'MANAGER'] } }
+              role: { name: { in: ['HR_ADMIN', 'MANAGER'] } }
             }
           });
           if (hrUser) return hrUser.id;
@@ -89,16 +98,35 @@ export const getTenantCreatorId = async (user?: any): Promise<string> => {
   return creatorId;
 };
 
-export const getTenantDepartmentFilter = async (user?: { id?: string; role?: string; email?: string }): Promise<Prisma.DepartmentWhereInput> => {
+export const getTenantDepartmentFilter = async (user?: { id?: string; role?: string; email?: string; companyId?: string }): Promise<Prisma.DepartmentWhereInput> => {
   const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
-  const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+  const role = normalizeRole(rawRole);
 
-  if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
+  if (role === CANONICAL_ROLES.SUPER_ADMIN) {
     return {};
   }
 
-  const creatorId = await getTenantCreatorId(user);
+  if (role === CANONICAL_ROLES.MANAGER) {
+    const scope = await resolveUserManagerScope(user);
+    if (scope.departmentIds.length > 0) {
+      return {
+        id: { in: scope.departmentIds },
+        ...(user?.companyId ? { companyId: user.companyId } : {})
+      };
+    }
+    return { id: 'NO_MATCH' };
+  }
 
+  if (user?.companyId) {
+    return {
+      OR: [
+        { companyId: user.companyId },
+        { createdById: null }
+      ]
+    };
+  }
+
+  const creatorId = await getTenantCreatorId(user);
   return {
     OR: [
       { createdById: null },
@@ -107,16 +135,25 @@ export const getTenantDepartmentFilter = async (user?: { id?: string; role?: str
   };
 };
 
-export const getTenantDesignationFilter = async (user?: { id?: string; role?: string; email?: string }): Promise<Prisma.DesignationWhereInput> => {
+export const getTenantDesignationFilter = async (user?: { id?: string; role?: string; email?: string; companyId?: string }): Promise<Prisma.DesignationWhereInput> => {
   const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
-  const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+  const role = normalizeRole(rawRole);
 
-  if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
+  if (role === CANONICAL_ROLES.SUPER_ADMIN) {
     return {};
   }
 
-  const creatorId = await getTenantCreatorId(user);
+  if (role === CANONICAL_ROLES.MANAGER) {
+    const scope = await resolveUserManagerScope(user);
+    if (scope.departmentIds.length > 0) {
+      return {
+        departmentId: { in: scope.departmentIds }
+      };
+    }
+    return { id: 'NO_MATCH' };
+  }
 
+  const creatorId = await getTenantCreatorId(user);
   return {
     OR: [
       { createdById: null },
@@ -127,14 +164,13 @@ export const getTenantDesignationFilter = async (user?: { id?: string; role?: st
 
 export const getTenantDocumentTypeFilter = async (user?: { id?: string; role?: string; email?: string }): Promise<Prisma.DocumentTypeWhereInput> => {
   const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
-  const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+  const role = normalizeRole(rawRole);
 
-  if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
+  if (role === CANONICAL_ROLES.SUPER_ADMIN) {
     return {};
   }
 
   const creatorId = await getTenantCreatorId(user);
-
   return {
     OR: [
       { createdById: null },
@@ -145,14 +181,26 @@ export const getTenantDocumentTypeFilter = async (user?: { id?: string; role?: s
 
 export const getTenantShiftFilter = async (user?: { id?: string; role?: string; email?: string }): Promise<Prisma.ShiftWhereInput> => {
   const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
-  const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+  const role = normalizeRole(rawRole);
 
-  if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
+  if (role === CANONICAL_ROLES.SUPER_ADMIN) {
     return {};
   }
 
-  const creatorId = await getTenantCreatorId(user);
+  if (role === CANONICAL_ROLES.MANAGER) {
+    const scope = await resolveUserManagerScope(user);
+    const creatorId = await getTenantCreatorId(user);
+    if (scope.departmentIds.length > 0) {
+      return {
+        OR: [
+          { createdById: creatorId },
+          { employees: { some: { departmentId: { in: scope.departmentIds } } } }
+        ]
+      };
+    }
+  }
 
+  const creatorId = await getTenantCreatorId(user);
   return {
     OR: [
       { createdById: null },
@@ -163,14 +211,13 @@ export const getTenantShiftFilter = async (user?: { id?: string; role?: string; 
 
 export const getTenantHolidayFilter = async (user?: { id?: string; role?: string; email?: string }): Promise<Prisma.HolidayWhereInput> => {
   const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
-  const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+  const role = normalizeRole(rawRole);
 
-  if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
+  if (role === CANONICAL_ROLES.SUPER_ADMIN) {
     return {};
   }
 
   const creatorId = await getTenantCreatorId(user);
-
   return {
     OR: [
       { createdById: null },
@@ -181,14 +228,13 @@ export const getTenantHolidayFilter = async (user?: { id?: string; role?: string
 
 export const getTenantLeaveTypeFilter = async (user?: { id?: string; role?: string; email?: string }): Promise<Prisma.LeaveTypeWhereInput> => {
   const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
-  const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+  const role = normalizeRole(rawRole);
 
-  if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
+  if (role === CANONICAL_ROLES.SUPER_ADMIN) {
     return {};
   }
 
   const creatorId = await getTenantCreatorId(user);
-
   return {
     OR: [
       { createdById: null },
@@ -199,14 +245,13 @@ export const getTenantLeaveTypeFilter = async (user?: { id?: string; role?: stri
 
 export const getTenantJobRoleFilter = async (user?: { id?: string; role?: string; email?: string }): Promise<Prisma.JobRoleWhereInput> => {
   const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
-  const normalizedRole = rawRole.toUpperCase().trim().replace(/[\s\_]+/g, '_');
+  const role = normalizeRole(rawRole);
 
-  if (normalizedRole === 'SUPER_ADMIN' || normalizedRole === 'SUPER_ADMINISTRATOR') {
+  if (role === CANONICAL_ROLES.SUPER_ADMIN) {
     return {};
   }
 
   const creatorId = await getTenantCreatorId(user);
-
   return {
     OR: [
       { createdById: null },

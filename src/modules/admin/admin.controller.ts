@@ -6,35 +6,147 @@ import bcrypt from 'bcryptjs';
 
 
 
+import { AuthRequest } from '../../middlewares/authMiddleware';
+import { normalizeRole, CANONICAL_ROLES } from '../../utils/roleConstants';
+
 // =======================
 // USERS CRUD
 // =======================
-export const getAllUsers = async (req: Request, res: Response) => {
+export const getAllUsers = async (req: AuthRequest, res: Response) => {
   try {
-    const { includeEmployees, roleId } = req.query;
-
-    const filter: any = {};
-    if (includeEmployees !== 'true') {
-      // Exclude regular employee accounts from administrative Users directory
-      filter.role = {
-        name: { notIn: ['EMPLOYEE'] }
-      };
+    const actorRole = normalizeRole(req.user?.role);
+    if (actorRole !== CANONICAL_ROLES.SUPER_ADMIN && actorRole !== CANONICAL_ROLES.HR_ADMIN) {
+      return res.status(403).json(new ApiResponse(false, "Access Denied: Only Super Admin and HR Admin can access User Management."));
     }
 
-    if (roleId && roleId !== 'ALL') {
-      filter.roleId = roleId;
+    const { page, limit, pageSize, search, roleId, role, status, companyId } = req.query;
+
+    const pageNum = Math.max(1, parseInt(String(page || 1), 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(String(pageSize || limit || 10), 10) || 10));
+
+    // Resolve tenant scoping
+    const tenantCompanyId = actorRole === CANONICAL_ROLES.HR_ADMIN
+      ? (req.user?.companyId || null)
+      : (companyId ? String(companyId) : null);
+
+    const baseWhere: any = {};
+    if (tenantCompanyId) {
+      baseWhere.OR = [
+        { companyId: tenantCompanyId },
+        { companyName: req.user?.companyName }
+      ];
     }
 
-    const users = await prisma.user.findMany({
-      where: filter,
-      include: { role: true },
-      orderBy: { createdAt: 'desc' }
-    });
-    // Remove password hashes
-    const sanitized = users.map(({ passwordHash, ...rest }) => rest);
-    return res.status(200).json(new ApiResponse(true, "Success", sanitized));
+    // Build filter for list query
+    const filterWhere: any = { ...baseWhere };
+
+    if (search && typeof search === 'string' && search.trim().length > 0) {
+      const searchTerm = search.trim();
+      filterWhere.AND = filterWhere.AND || [];
+      filterWhere.AND.push({
+        OR: [
+          { firstName: { contains: searchTerm, mode: 'insensitive' } },
+          { lastName: { contains: searchTerm, mode: 'insensitive' } },
+          { email: { contains: searchTerm, mode: 'insensitive' } }
+        ]
+      });
+    }
+
+    if (roleId && roleId !== 'ALL' && typeof roleId === 'string') {
+      filterWhere.roleId = roleId;
+    } else if (role && role !== 'ALL' && typeof role === 'string') {
+      filterWhere.role = { name: { equals: role, mode: 'insensitive' } };
+    }
+
+    if (status && status !== 'ALL' && typeof status === 'string') {
+      if (status === 'ACTIVE') {
+        filterWhere.isDeleted = false;
+      } else if (status === 'INACTIVE') {
+        filterWhere.isDeleted = true;
+      }
+    }
+
+    // Execute paginated findMany and total count concurrently
+    const skip = (pageNum - 1) * limitNum;
+    
+    const [users, totalMatching] = await Promise.all([
+      prisma.user.findMany({
+        where: filterWhere,
+        include: {
+          role: true,
+          company: { select: { id: true, name: true } }
+        },
+        orderBy: [
+          { createdAt: 'desc' },
+          { id: 'asc' }
+        ],
+        skip,
+        take: limitNum
+      }),
+      prisma.user.count({ where: filterWhere })
+    ]);
+
+    const totalPages = Math.ceil(totalMatching / limitNum) || 1;
+
+    // Calculate overall KPI Summary Metrics for authorized scope
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const [allScopedUsers, totalUsersCount, activeAdminsCount, employeesCount, activeCount, inactiveCount, newUsersCount] = await Promise.all([
+      prisma.user.findMany({
+        where: baseWhere,
+        include: { role: true }
+      }),
+      prisma.user.count({ where: { ...baseWhere, isDeleted: false } }),
+      prisma.user.count({
+        where: {
+          ...baseWhere,
+          isDeleted: false,
+          role: { name: { in: [CANONICAL_ROLES.SUPER_ADMIN, CANONICAL_ROLES.HR_ADMIN] } }
+        }
+      }),
+      prisma.user.count({
+        where: {
+          ...baseWhere,
+          isDeleted: false,
+          role: { name: { in: [CANONICAL_ROLES.EMPLOYEES, CANONICAL_ROLES.MANAGER] } }
+        }
+      }),
+      prisma.user.count({ where: { ...baseWhere, isDeleted: false } }),
+      prisma.user.count({ where: { ...baseWhere, isDeleted: true } }),
+      prisma.user.count({
+        where: {
+          ...baseWhere,
+          createdAt: { gte: thirtyDaysAgo }
+        }
+      })
+    ]);
+
+    const sanitized = users.map(({ passwordHash, ...rest }) => ({
+      ...rest,
+      companyName: rest.company?.name || rest.companyName || null
+    }));
+
+    return res.status(200).json(new ApiResponse(true, "Users retrieved successfully", {
+      items: sanitized,
+      pagination: {
+        page: pageNum,
+        pageSize: limitNum,
+        total: totalMatching,
+        totalPages
+      },
+      counts: {
+        totalUsers: totalUsersCount,
+        activeAdmins: activeAdminsCount,
+        employees: employeesCount,
+        active: activeCount,
+        inactive: inactiveCount,
+        newUsers: newUsersCount
+      }
+    }));
   } catch (error: any) {
-    return res.status(500).json(new ApiResponse(false, error.message));
+    console.error("Error fetching users:", error);
+    return res.status(500).json(new ApiResponse(false, error.message || "Internal server error"));
   }
 };
 
@@ -359,49 +471,53 @@ export const deleteUser = async (req: Request, res: Response) => {
 export const getAllRoles = async (req: Request, res: Response) => {
   try {
     const roles = await prisma.role.findMany({
-      include: { permissions: { include: { permission: true } } },
+      where: {
+        name: { in: ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER', 'EMPLOYEES'] }
+      },
+      include: {
+        permissions: { include: { permission: true } },
+        _count: { select: { users: true } }
+      },
       orderBy: { name: 'asc' }
     });
-    return res.status(200).json(new ApiResponse(true, "Success", roles));
+
+    const canonicalDefinitions = [
+      { name: 'SUPER_ADMIN', description: 'Platform Administrator with SaaS-level permissions and multi-tenant management.' },
+      { name: 'HR_ADMIN', description: 'Company HR Administrator managing organization, employees, shifts, leaves, and payroll.' },
+      { name: 'MANAGER', description: 'Department & Team Manager managing assigned subordinate employees, rosters, and approvals.' },
+      { name: 'EMPLOYEES', description: 'Regular Employee with self-service profile, attendance logging, leave requests, and payslips.' }
+    ];
+
+    const enriched = canonicalDefinitions.map(def => {
+      const found = roles.find(r => r.name === def.name);
+      return {
+        id: found?.id || def.name,
+        name: def.name,
+        description: def.description,
+        isSystemCore: true,
+        userCount: found?._count?.users || 0,
+        createdAt: found?.createdAt || new Date(),
+        updatedAt: found?.updatedAt || new Date(),
+        permissions: found?.permissions || []
+      };
+    });
+
+    return res.status(200).json(new ApiResponse(true, "Success", enriched));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
   }
 };
 
 export const createRole = async (req: Request, res: Response) => {
-  try {
-    const { name, description } = req.body;
-    const role = await prisma.role.create({
-      data: { name, description }
-    });
-    return res.status(201).json(new ApiResponse(true, "Role created", role));
-  } catch (error: any) {
-    return res.status(500).json(new ApiResponse(false, error.message));
-  }
+  return res.status(403).json(new ApiResponse(false, "System Policy Violation: Creation of custom roles is disabled. The system operates on exactly four canonical roles (SUPER_ADMIN, HR_ADMIN, MANAGER, EMPLOYEES)."));
 };
 
 export const updateRole = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const { name, description } = req.body;
-    const role = await prisma.role.update({
-      where: { id },
-      data: { name, description }
-    });
-    return res.status(200).json(new ApiResponse(true, "Role updated", role));
-  } catch (error: any) {
-    return res.status(500).json(new ApiResponse(false, error.message));
-  }
+  return res.status(403).json(new ApiResponse(false, "System Policy Violation: Canonical system roles cannot be edited."));
 };
 
 export const deleteRole = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    await prisma.role.delete({ where: { id } });
-    return res.status(200).json(new ApiResponse(true, "Role deleted"));
-  } catch (error: any) {
-    return res.status(500).json(new ApiResponse(false, error.message));
-  }
+  return res.status(403).json(new ApiResponse(false, "System Policy Violation: Canonical system roles cannot be deleted."));
 };
 
 // =======================
@@ -550,8 +666,16 @@ export const getAllAuditLogs = async (req: Request, res: Response) => {
 // =======================
 // ROLE PAGE PERMISSIONS (REAL-TIME DB SYNC)
 // =======================
+let cachedRolePagePermissions: Record<string, string[]> | null = null;
+let lastPermissionsCacheTime = 0;
+
 export const getRolePagePermissionsApi = async (req: Request, res: Response) => {
   try {
+    const now = Date.now();
+    if (cachedRolePagePermissions && now - lastPermissionsCacheTime < 300000) {
+      return res.status(200).json(new ApiResponse(true, "Role page permissions fetched", cachedRolePagePermissions));
+    }
+
     const settings = await prisma.systemSetting.findMany({
       where: { key: { startsWith: 'page_permissions_' } }
     });
@@ -563,6 +687,9 @@ export const getRolePagePermissionsApi = async (req: Request, res: Response) => 
         permissionsMap[roleKey] = JSON.parse(s.value);
       } catch (e) {}
     });
+
+    cachedRolePagePermissions = permissionsMap;
+    lastPermissionsCacheTime = Date.now();
 
     return res.status(200).json(new ApiResponse(true, "Role page permissions fetched", permissionsMap));
   } catch (error: any) {
@@ -586,6 +713,9 @@ export const saveRolePagePermissionsApi = async (req: Request, res: Response) =>
       update: { value, group: 'Permissions' },
       create: { key, value, group: 'Permissions' }
     });
+
+    cachedRolePagePermissions = null;
+    lastPermissionsCacheTime = 0;
 
     return res.status(200).json(new ApiResponse(true, `Permissions saved for ${normalizedRole}`, { key, allowedHrefs }));
   } catch (error: any) {

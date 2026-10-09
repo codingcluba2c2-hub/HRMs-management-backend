@@ -50,6 +50,25 @@ model SystemSetting {
   updatedAt   DateTime @updatedAt
 }
 
+model Company {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  code        String?  @unique
+  website     String?
+  address     String?
+  phone       String?
+  status      String   @default("ACTIVE") // ACTIVE, SUSPENDED, DEACTIVATED
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       User[]
+  departments Department[]
+  employees   Employee[]
+  googleSheetsConfig    GoogleSheetsConfig?
+  googleSheetsSyncJobs  GoogleSheetsSyncJob[]
+  googleSheetsSyncOutbox GoogleSheetsSyncOutbox[]
+}
+
 model User {
   id            String   @id @default(uuid())
   firstName     String
@@ -60,6 +79,9 @@ model User {
   profilePic    String?
   roleId        String?
   role          Role?    @relation(fields: [roleId], references: [id])
+  
+  companyId     String?
+  company       Company? @relation(fields: [companyId], references: [id])
   
   twoFactorEnabled Boolean @default(false)
   lastPasswordChange DateTime?
@@ -83,6 +105,7 @@ model User {
   documentAuditLogs DocumentAuditLog[]
 
   @@index([email])
+  @@index([companyId])
   @@index([createdAt])
 }
 
@@ -93,6 +116,9 @@ model Department {
   description String?
   status      Boolean  @default(true) // Active/Inactive
   
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
+
   managerId   String?
   manager     Employee? @relation("DepartmentManager", fields: [managerId], references: [id])
 
@@ -104,6 +130,9 @@ model Department {
   designations Designation[]
   employees    Employee[] @relation("EmployeeDepartment")
   weeklyRosters WeeklyRoster[]
+  managerScopes ManagerScope[]
+
+  @@index([companyId])
 }
 
 model Designation {
@@ -123,6 +152,21 @@ model Designation {
 
   employees    Employee[]
   weeklyRosters WeeklyRoster[]
+  managerScopes ManagerScope[]
+}
+
+model ManagerScope {
+  id            String       @id @default(uuid())
+  managerId     String
+  manager       Employee     @relation("ManagerScopes", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId  String?
+  department    Department?  @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  designationId String?
+  designation   Designation? @relation(fields: [designationId], references: [id], onDelete: SetNull)
+  createdAt     DateTime     @default(now())
+
+  @@unique([managerId, departmentId, designationId])
+  @@index([managerId])
 }
 
 model Employee {
@@ -130,6 +174,9 @@ model Employee {
   userId         String?  @unique // Optional connection to system login User
   user           User?    @relation(fields: [userId], references: [id])
   
+  companyId      String?
+  company        Company? @relation(fields: [companyId], references: [id])
+
   employeeId     String   @unique // Internal company ID like EMP-001
   photo          String?
   firstName      String
@@ -145,6 +192,7 @@ model Employee {
   departmentId   String?
   department     Department?  @relation("EmployeeDepartment", fields: [departmentId], references: [id])
   managedDepartments Department[] @relation("DepartmentManager")
+  managerScopes      ManagerScope[] @relation("ManagerScopes")
   
   designationId  String?
   designation    Designation? @relation(fields: [designationId], references: [id])
@@ -204,6 +252,7 @@ model Employee {
 
   @@index([email])
   @@index([userId])
+  @@index([companyId])
   @@index([departmentId])
   @@index([status])
   @@index([joiningDate])
@@ -530,6 +579,9 @@ model AttendanceLog {
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@index([attendanceId])
+  @@index([punchOut])
 }
 
 model BreakSession {
@@ -545,6 +597,8 @@ model BreakSession {
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@index([attendanceId])
 }
 
 model AttendanceCorrection {
@@ -576,6 +630,9 @@ model AttendanceCorrection {
   updatedAt         DateTime @updatedAt
 
   approvalHistory   ApprovalHistory[]
+
+  @@index([employeeId, status])
+  @@index([status, date])
 }
 
 model ApprovalHistory {
@@ -755,4 +812,66 @@ model RosterAuditLog {
   @@index([rosterId])
   @@index([employeeId])
 }
+
+model GoogleSheetsConfig {
+  id                    String    @id @default(uuid())
+  companyId             String?   @unique
+  company               Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  spreadsheetId         String
+  serviceAccountEmail   String?
+  isEnabled             Boolean   @default(true)
+  autoSyncEnabled       Boolean   @default(true)
+  syncIntervalMinutes   Int       @default(15)
+  lastSyncAt            DateTime?
+  lastSyncStatus        String    @default("IDLE") // IDLE, IN_PROGRESS, SUCCESS, PARTIAL_SUCCESS, FAILED
+  lastSyncError         String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([companyId])
+}
+
+model GoogleSheetsSyncJob {
+  id             String    @id @default(uuid())
+  companyId      String?
+  company        Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worksheet      String    // Employees, Attendance, Leave Requests, Shift Roster, Sync Status
+  triggerType    String    @default("MANUAL") // INITIAL_BOOTSTRAP, EVENT_DRIVEN, MANUAL, SCHEDULED_RECONCILIATION
+  status         String    @default("PENDING") // PENDING, IN_PROGRESS, SUCCESS, PARTIAL_SUCCESS, FAILED
+  insertedCount  Int       @default(0)
+  updatedCount   Int       @default(0)
+  skippedCount   Int       @default(0)
+  failedCount    Int       @default(0)
+  retryCount     Int       @default(0)
+  errorMessage   String?
+  details        Json?
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([companyId])
+  @@index([worksheet])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model GoogleSheetsSyncOutbox {
+  id          String    @id @default(uuid())
+  companyId   String?
+  company     Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  entityType  String    // EMPLOYEE, ATTENDANCE, LEAVE_REQUEST, SHIFT_ROSTER
+  entityId    String
+  action      String    @default("UPSERT") // UPSERT, DELETE
+  status      String    @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED
+  retryCount  Int       @default(0)
+  lastError   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([companyId])
+  @@index([status, createdAt])
+  @@index([entityType, entityId])
+}
+
 
