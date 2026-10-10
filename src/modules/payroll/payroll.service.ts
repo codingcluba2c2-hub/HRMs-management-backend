@@ -4,20 +4,146 @@ import { decrypt } from '../../utils/encryption';
 import { generatePayslipPdf } from '../../utils/pdfGenerator';
 import { sendPayrollEmail } from '../../utils/mailer';
 
+export const calculatePayrollPreview = async (employeeId: string, month: number, year: number) => {
+  const employee = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    include: {
+      shift: true,
+      department: true,
+      designation: true,
+      company: true,
+      user: true
+    }
+  });
+
+  if (!employee) {
+    throw new Error("Employee not found");
+  }
+
+  // 1. Calendar calculations: Working days in chosen Month & Year
+  const totalDaysInMonth = new Date(year, month, 0).getDate();
+  const startDate = new Date(year, month - 1, 1, 0, 0, 0);
+  const endDate = new Date(year, month - 1, totalDaysInMonth, 23, 59, 59);
+
+  // Weekly off days from employee shift (e.g. ['Sunday'] or ['Saturday', 'Sunday'])
+  const weeklyOffs: string[] = (employee.shift?.weeklyOff && employee.shift.weeklyOff.length > 0)
+    ? employee.shift.weeklyOff.map(d => d.toLowerCase())
+    : ['sunday'];
+
+  const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+  let weeklyOffCount = 0;
+  for (let d = 1; d <= totalDaysInMonth; d++) {
+    const curDate = new Date(year, month - 1, d);
+    const dayName = dayNames[curDate.getDay()];
+    if (weeklyOffs.includes(dayName)) {
+      weeklyOffCount++;
+    }
+  }
+
+  // Public holidays in this month
+  const holidays = await prisma.holiday.findMany({
+    where: {
+      date: {
+        gte: startDate,
+        lte: endDate
+      }
+    }
+  }).catch(() => []);
+
+  let nonWeekendHolidayCount = 0;
+  holidays.forEach(h => {
+    const hDate = new Date(h.date);
+    const dayName = dayNames[hDate.getDay()];
+    if (!weeklyOffs.includes(dayName)) {
+      nonWeekendHolidayCount++;
+    }
+  });
+
+  const standardWorkingDays = Math.max(1, totalDaysInMonth - weeklyOffCount - nonWeekendHolidayCount);
+
+  // 2. Base salary from employee creation/profile
+  const basicSalary = Number(employee.baseSalary) || 0;
+
+  // 3. Attendance records for this employee in the month
+  const attendanceRecords = await prisma.attendanceRecord.findMany({
+    where: {
+      employeeId: employee.id,
+      date: {
+        gte: startDate,
+        lte: endDate
+      }
+    }
+  }).catch(() => []);
+
+  let presentDays = 0;
+  let halfDays = 0;
+  let absentDays = 0;
+  attendanceRecords.forEach(att => {
+    if (att.status === 'PRESENT') presentDays++;
+    else if (att.status === 'HALF_DAY') halfDays++;
+    else if (att.status === 'ABSENT') absentDays++;
+  });
+
+  let accountNumber = employee.accountNumber || '';
+  if (accountNumber) {
+    try { accountNumber = decrypt(accountNumber); } catch (e) {}
+  }
+
+  const transactionId = `TXN-${year}${String(month).padStart(2, '0')}-${employee.employeeId || employee.id.slice(0, 6).toUpperCase()}`;
+
+  return {
+    employeeId: employee.id,
+    employeeName: `${employee.firstName} ${employee.lastName}`,
+    employeeEmail: employee.email,
+    employeeCode: employee.employeeId,
+    department: employee.department?.name || 'General',
+    designation: employee.designation?.name || 'Staff',
+    basicSalary,
+    totalDaysInMonth,
+    weeklyOffCount,
+    holidayCount: nonWeekendHolidayCount,
+    workingDays: standardWorkingDays,
+    presentDays: presentDays + (halfDays * 0.5),
+    absentDays,
+    paidDays: standardWorkingDays,
+    bonus: 0,
+    deductions: 0,
+    bankName: employee.bankName || '',
+    accountNumber: accountNumber || '',
+    transactionId,
+    status: 'PAID',
+    paymentDate: new Date().toISOString().split('T')[0]
+  };
+};
+
 export const createPayrollRecord = async (arg1: any, arg2?: any) => {
   const data = arg2 !== undefined ? arg2 : arg1;
-  const employee = await prisma.employee.findUnique({ where: { id: data.employeeId } });
+  const employee = await prisma.employee.findUnique({ 
+    where: { id: data.employeeId },
+    include: {
+      company: true,
+      department: true,
+      designation: true,
+      user: true
+    }
+  });
   if (!employee) throw new Error("Employee not found");
 
-  // Calculate fields
-  const grossSalary = data.basicSalary + (data.bonus || 0);
-  const netSalary = grossSalary - (data.deductions || 0);
+  // Calculate fields with safe numeric parsing
+  const basicSalary = Number(data.basicSalary) || 0;
+  const bonus = Number(data.bonus) || 0;
+  const deductions = Number(data.deductions) || 0;
+  const workingDays = Number(data.workingDays) || 30;
+  const paidDays = Number(data.paidDays || data.workingDays) || workingDays;
+  const grossSalary = basicSalary + bonus;
+  const netSalary = grossSalary - deductions;
   
-  // Tax logic (simplified)
-  const incomeTax = data.deductions > 0 ? data.deductions * 0.5 : 0; // arbitrary split for display
-  const providentFund = data.deductions > 0 ? data.deductions * 0.5 : 0;
+  // Tax & PF breakdown
+  const incomeTax = deductions > 0 ? deductions * 0.5 : 0;
+  const providentFund = deductions > 0 ? deductions * 0.5 : 0;
 
-  let parsedPaymentDate = new Date(data.paymentDate);
+  let parsedPaymentDate = new Date(data.paymentDate || new Date());
   if (typeof data.paymentDate === 'string' && data.paymentDate.length === 10) {
     const now = new Date();
     if (data.paymentDate === now.toISOString().split('T')[0]) {
@@ -27,83 +153,122 @@ export const createPayrollRecord = async (arg1: any, arg2?: any) => {
     }
   }
 
+  const transactionId = data.transactionId || `TXN-${data.year}${String(data.month).padStart(2, '0')}-${employee.employeeId || employee.id.slice(0, 6).toUpperCase()}`;
+
   // Save to DB
   const payrollRecord = await prisma.payroll.upsert({
     where: {
       employeeId_month_year: {
         employeeId: employee.id,
-        month: data.month,
-        year: data.year
+        month: Number(data.month),
+        year: Number(data.year)
       }
     },
     update: {
-      basicSalary: data.basicSalary,
-      bonus: data.bonus || 0,
-      deductions: data.deductions || 0,
+      basicSalary,
+      bonus,
+      deductions,
       grossSalary,
       netSalary,
       incomeTax,
       providentFund,
-      workingDays: data.workingDays,
-      paidDays: data.workingDays,
-      status: data.status,
-      paymentDate: parsedPaymentDate
+      workingDays,
+      paidDays,
+      status: data.status || 'PAID',
+      paymentDate: parsedPaymentDate,
+      transactionId
     },
     create: {
       employeeId: employee.id,
-      month: data.month,
-      year: data.year,
-      basicSalary: data.basicSalary,
-      bonus: data.bonus || 0,
-      deductions: data.deductions || 0,
+      month: Number(data.month),
+      year: Number(data.year),
+      basicSalary,
+      bonus,
+      deductions,
       grossSalary,
       netSalary,
       incomeTax,
       providentFund,
-      workingDays: data.workingDays,
-      paidDays: data.workingDays, // simplified
-      status: data.status,
-      paymentDate: parsedPaymentDate
+      workingDays,
+      paidDays,
+      status: data.status || 'PAID',
+      paymentDate: parsedPaymentDate,
+      transactionId
     }
   });
 
+  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const companyName = employee.company?.name || employee.user?.companyName || "Enterprise HRMS";
+  const companyAddress = employee.company?.address || employee.user?.companyAddress || "123 Tech Park, Innovation Valley";
+  const companyWebsite = employee.company?.website || employee.user?.companyWebsite || "www.enterprise-hrms.com";
+  const companyPhone = employee.company?.phone || employee.user?.companyPhone || "+1 800 555 0199";
+
+  let decryptedAccount = data.accountNumber || employee.accountNumber || "N/A";
+  if (decryptedAccount && decryptedAccount !== "N/A") {
+    try { decryptedAccount = decrypt(decryptedAccount); } catch (e) {}
+  }
+
   // Generate PDF Payslip
+  let pdfBuffer: Buffer | undefined;
   try {
-    const pdfBuffer = await generatePayslipPdf({
-      companyName: "Enterprise HRMS",
-      companyAddress: "123 Tech Park, Innovation Valley",
-      companyWebsite: "www.enterprise-hrms.com",
-      companyPhone: "+1 800 555 0199",
-      month: data.month,
-      year: data.year,
+    pdfBuffer = await generatePayslipPdf({
+      companyName,
+      companyAddress,
+      companyWebsite,
+      companyPhone,
+      month: Number(data.month),
+      year: Number(data.year),
       employeeName: `${employee.firstName} ${employee.lastName}`,
       employeeId: employee.employeeId,
       employeeEmail: employee.email,
-      paymentDate: new Date(data.paymentDate),
-      workingDays: data.workingDays,
-      transactionId: data.transactionId || `TXN-${Date.now()}`,
+      paymentDate: parsedPaymentDate,
+      workingDays,
+      transactionId,
       bankName: data.bankName || employee.bankName || "N/A",
-      accountNumber: data.accountNumber || (employee.accountNumber ? decrypt(employee.accountNumber) : "N/A"),
-      basicSalary: data.basicSalary,
-      bonus: data.bonus || 0,
-      deductions: data.deductions || 0,
+      accountNumber: decryptedAccount,
+      basicSalary,
+      bonus,
+      deductions,
       netSalary
     });
+  } catch (pdfErr) {
+    console.error("[PAYROLL] Failed to generate PDF buffer:", pdfErr);
+  }
 
-    // Send Email
-    await sendPayrollEmail(
-      employee.email, 
-      `${employee.firstName} ${employee.lastName}`, 
-      data.month, 
-      data.year, 
-      netSalary,
-      data.bankName || employee.bankName || "N/A",
-      "XXXX" + (data.accountNumber || (employee.accountNumber ? decrypt(employee.accountNumber) : "")).slice(-4),
-      pdfBuffer
-    );
-  } catch (error) {
-    console.error("Failed to generate PDF or send email:", error);
-    // Even if email fails, record is created, but we might want to log it
+  // Send Email with PDF attachment
+  try {
+    const emailRecipient = employee.email || employee.user?.email;
+    if (emailRecipient) {
+      await sendPayrollEmail(
+        emailRecipient, 
+        `${employee.firstName} ${employee.lastName}`, 
+        Number(data.month), 
+        Number(data.year), 
+        netSalary,
+        data.bankName || employee.bankName || "N/A",
+        decryptedAccount.length > 4 ? ("XXXX" + decryptedAccount.slice(-4)) : decryptedAccount,
+        pdfBuffer
+      );
+    }
+  } catch (emailErr) {
+    console.error("[PAYROLL] Failed to send payroll email:", emailErr);
+  }
+
+  // In-app Notification for Employee
+  if (employee.userId) {
+    try {
+      await prisma.notificationQueue.create({
+        data: {
+          recipientId: employee.userId,
+          title: "Salary Slip Issued",
+          message: `Your salary slip for ${monthNames[Number(data.month) - 1]} ${data.year} (₹${netSalary.toLocaleString('en-IN')}) has been generated and sent to your email.`,
+          type: "IN_APP",
+          referenceId: payrollRecord.id
+        }
+      });
+    } catch (notifErr) {
+      console.warn("[PAYROLL] Failed to create in-app notification:", notifErr);
+    }
   }
 
   return payrollRecord;
@@ -121,8 +286,15 @@ export const bulkCreatePayrollRecords = async (records: any[]) => {
 };
 
 export const getPayrollSummary = async (userId: string, role: string) => {
-  if (role === 'EMPLOYEE') {
-    const employee = await prisma.employee.findUnique({ where: { userId } });
+  const isEmployee = role === 'EMPLOYEE' || role === 'EMPLOYEES';
+  if (isEmployee) {
+    let employee = await prisma.employee.findUnique({ where: { userId } });
+    if (!employee) {
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (user?.email) {
+        employee = await prisma.employee.findFirst({ where: { email: user.email } });
+      }
+    }
     if (!employee) throw new Error("Employee not found");
     
     // YTD Logic (Year To Date)
@@ -196,8 +368,15 @@ export const getPayrollSummary = async (userId: string, role: string) => {
 export const getPayrollRecords = async (userId: string, role: string, filters: any) => {
   let whereClause: any = {};
   
-  if (role === 'EMPLOYEE') {
-    const employee = await prisma.employee.findUnique({ where: { userId } });
+  const isEmployee = role === 'EMPLOYEE' || role === 'EMPLOYEES';
+  if (isEmployee) {
+    let employee = await prisma.employee.findUnique({ where: { userId } });
+    if (!employee) {
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (user?.email) {
+        employee = await prisma.employee.findFirst({ where: { email: user.email } });
+      }
+    }
     if (!employee) throw new Error("Employee not found");
     whereClause.employeeId = employee.id;
   }
@@ -400,8 +579,15 @@ export const generatePayslipPdfById = async (userId: string, role: string, paysl
 
 export const getPayrollAnalytics = async (userId: string, role: string) => {
   let whereClause: any = {};
-  if (role === 'EMPLOYEE') {
-    const employee = await prisma.employee.findUnique({ where: { userId } });
+  const isEmployee = role === 'EMPLOYEE' || role === 'EMPLOYEES';
+  if (isEmployee) {
+    let employee = await prisma.employee.findUnique({ where: { userId } });
+    if (!employee) {
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (user?.email) {
+        employee = await prisma.employee.findFirst({ where: { email: user.email } });
+      }
+    }
     if (!employee) throw new Error("Employee not found");
     whereClause.employeeId = employee.id;
   }

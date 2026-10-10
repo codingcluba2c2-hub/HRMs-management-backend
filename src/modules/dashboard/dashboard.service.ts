@@ -539,8 +539,8 @@ export const getEmployeeStats = async (userId: string) => {
     profileCompletion,
     announcements,
     holidays,
-    upcomingBirthdays: await getUpcomingBirthdays(),
-    workAnniversaries: await getUpcomingAnniversaries(),
+    upcomingBirthdays: await getUpcomingBirthdays(employee.companyId ? { companyId: employee.companyId } : {}),
+    workAnniversaries: await getUpcomingAnniversaries(employee.companyId ? { companyId: employee.companyId } : {}),
     insights,
     recentActivities: [
       { id: '1', title: 'Punched In', timestamp: new Date(), statusColor: 'bg-green-500' },
@@ -552,8 +552,30 @@ export const getEmployeeStats = async (userId: string) => {
 };
 
 export const getUpcomingBirthdays = async (tenantFilter: any = {}) => {
+  const superAdminExcludeConditions: any[] = [
+    { user: { role: { name: 'SUPER_ADMIN' } } },
+    {
+      AND: [
+        { firstName: { equals: 'Super', mode: 'insensitive' } },
+        { lastName: { equals: 'Admin', mode: 'insensitive' } }
+      ]
+    },
+    { email: { equals: 'superadmin@hrmspro.com', mode: 'insensitive' } },
+    { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } }
+  ];
+
+  const existingNot = tenantFilter?.NOT
+    ? (Array.isArray(tenantFilter.NOT) ? tenantFilter.NOT : [tenantFilter.NOT])
+    : [];
+
   const employees = await prisma.employee.findMany({
-    where: { ...tenantFilter, dob: { not: null }, status: 'ACTIVE' },
+    where: {
+      ...tenantFilter,
+      dob: { not: null },
+      status: 'ACTIVE',
+      isDeleted: false,
+      NOT: [...existingNot, ...superAdminExcludeConditions]
+    },
     select: {
       id: true,
       firstName: true,
@@ -600,8 +622,29 @@ export const getUpcomingBirthdays = async (tenantFilter: any = {}) => {
 };
 
 export const getUpcomingAnniversaries = async (tenantFilter: any = {}) => {
+  const superAdminExcludeConditions: any[] = [
+    { user: { role: { name: 'SUPER_ADMIN' } } },
+    {
+      AND: [
+        { firstName: { equals: 'Super', mode: 'insensitive' } },
+        { lastName: { equals: 'Admin', mode: 'insensitive' } }
+      ]
+    },
+    { email: { equals: 'superadmin@hrmspro.com', mode: 'insensitive' } },
+    { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } }
+  ];
+
+  const existingNot = tenantFilter?.NOT
+    ? (Array.isArray(tenantFilter.NOT) ? tenantFilter.NOT : [tenantFilter.NOT])
+    : [];
+
   const employees = await prisma.employee.findMany({
-    where: { ...tenantFilter, status: 'ACTIVE' },
+    where: {
+      ...tenantFilter,
+      status: 'ACTIVE',
+      isDeleted: false,
+      NOT: [...existingNot, ...superAdminExcludeConditions]
+    },
     select: {
       id: true,
       firstName: true,
@@ -764,6 +807,31 @@ export const getManagerStats = async (user: any) => {
     { title: "On Leave Today", value: onLeaveToday }
   ];
 
+  const announcements = await prisma.announcement.findMany({
+    where: {
+      isActive: true,
+      OR: [
+        { target: 'ALL' },
+        { target: 'MANAGER' },
+        ...(user?.id ? [{ authorId: user.id }] : [])
+      ]
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 5,
+    include: {
+      author: {
+        select: {
+          firstName: true,
+          lastName: true,
+          companyName: true
+        }
+      }
+    }
+  }).catch(() => []);
+
+  const upcomingBirthdays = await getUpcomingBirthdays(scopedFilter);
+  const workAnniversaries = await getUpcomingAnniversaries(scopedFilter);
+
   return {
     metrics,
     totalAssignedEmployees: totalAssigned,
@@ -776,6 +844,9 @@ export const getManagerStats = async (user: any) => {
     pendingLeaveApprovals: pendingLeaves,
     pendingAttendanceRegularizations: pendingAttendance,
     teamMembers,
-    pendingTasks
+    pendingTasks,
+    announcements,
+    upcomingBirthdays,
+    workAnniversaries
   };
 };

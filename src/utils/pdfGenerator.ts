@@ -1,4 +1,6 @@
-interface PayslipData {
+import fs from 'fs';
+
+export interface PayslipData {
   companyName: string;
   companyAddress: string;
   companyWebsite: string;
@@ -17,6 +19,26 @@ interface PayslipData {
   bonus: number;
   deductions: number;
   netSalary: number;
+}
+
+export function getBrowserExecutablePath(): string | undefined {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  const candidates = [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium'
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return undefined;
 }
 
 export const generatePayslipPdf = async (data: PayslipData): Promise<Buffer> => {
@@ -272,9 +294,11 @@ export const generatePayslipPdf = async (data: PayslipData): Promise<Buffer> => 
   const puppeteerModule = await import('puppeteer');
   const puppeteer = puppeteerModule.default || puppeteerModule;
 
+  const executablePath = getBrowserExecutablePath();
   const browser = await puppeteer.launch({ 
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+    ...(executablePath ? { executablePath } : {}),
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] 
   });
   const page = await browser.newPage();
   

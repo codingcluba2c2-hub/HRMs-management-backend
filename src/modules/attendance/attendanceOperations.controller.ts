@@ -137,6 +137,16 @@ export const getOperationsList = async (req: Request, res: Response) => {
     
     if (toCreate.length > 0) {
       await prisma.attendanceRecord.createMany({ data: toCreate, skipDuplicates: true });
+      try {
+        const createdRecs = await prisma.attendanceRecord.findMany({
+          where: { date: today, employeeId: { in: toCreate.map(c => c.employeeId) } },
+          select: { id: true, employeeId: true }
+        });
+        const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+        for (const rec of createdRecs) {
+          GoogleSheetsService.enqueueOutboxEvent(null, 'ATTENDANCE', rec.id, 'ATTENDANCE_CREATED');
+        }
+      } catch (e) {}
     }
 
     // Now proceed with normal pagination across AttendanceRecords

@@ -37,7 +37,9 @@ export const getTenantEmployeeFilter = (user?: { id?: string; userId?: string; r
       OR: matchConditions,
       NOT: [
         { email: { equals: 'superadmin@hrmspro.com', mode: 'insensitive' as const } },
+        { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' as const } },
         { user: { role: { name: 'SUPER_ADMIN' } } },
+        { AND: [{ firstName: { equals: 'Super', mode: 'insensitive' as const } }, { lastName: { equals: 'Admin', mode: 'insensitive' as const } }] },
         { employeeId: { in: ['EMP-SUPER-001', 'SUPER-ADMIN'] } }
       ]
     };
@@ -59,7 +61,9 @@ export const getTenantEmployeeFilter = (user?: { id?: string; userId?: string; r
     OR: matchConditions,
     NOT: [
       { email: { equals: 'superadmin@hrmspro.com', mode: 'insensitive' as const } },
+      { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' as const } },
       { user: { role: { name: 'SUPER_ADMIN' } } },
+      { AND: [{ firstName: { equals: 'Super', mode: 'insensitive' as const } }, { lastName: { equals: 'Admin', mode: 'insensitive' as const } }] },
       { employeeId: { in: ['EMP-SUPER-001', 'SUPER-ADMIN'] } }
     ]
   };

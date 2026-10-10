@@ -293,8 +293,10 @@ export const punchIn = async (req: Request, res: Response) => {
 
     try {
       const { GoogleSheetsService } = await import('../../services/googleSheets.service');
-      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id);
-    } catch (e) {}
+      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id, isResume ? 'SESSION_RESUMED' : 'PUNCH_IN');
+    } catch (e) {
+      console.warn("[GoogleSheets] Failed to enqueue PunchIn sync event:", e);
+    }
 
     return res.status(201).json(new ApiResponse(true, isResume ? "Resumed Work Successfully" : "Punched In Successfully", {
       ...newLog,
@@ -391,8 +393,10 @@ export const punchOut = async (req: Request, res: Response) => {
 
     try {
       const { GoogleSheetsService } = await import('../../services/googleSheets.service');
-      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id);
-    } catch (e) {}
+      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id, 'PUNCH_OUT');
+    } catch (e) {
+      console.warn("[GoogleSheets] Failed to enqueue PunchOut sync event:", e);
+    }
 
     return res.status(200).json(new ApiResponse(true, "Punched Out Successfully", {
       id: openLog.id,
@@ -474,6 +478,8 @@ export const startBreak = async (req: Request, res: Response) => {
           where: { id: openBreakId },
           data: { type: breakTypeToUse }
         });
+        const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+        GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id, 'BREAK_TYPE_UPDATED');
       } catch (e) {}
 
       return res.status(200).json(new ApiResponse(true, `Break updated to ${breakTypeToUse}`, { id: openBreakId, type: breakTypeToUse }));
@@ -491,6 +497,13 @@ export const startBreak = async (req: Request, res: Response) => {
       now,
       now
     );
+
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id, 'BREAK_STARTED');
+    } catch (e) {
+      console.warn("[GoogleSheets] Failed to enqueue BreakStarted sync event:", e);
+    }
 
     return res.status(201).json(new ApiResponse(true, `${breakTypeToUse} break started`, { 
       id: newBreakId, 
@@ -557,8 +570,10 @@ export const endBreak = async (req: Request, res: Response) => {
 
     try {
       const { GoogleSheetsService } = await import('../../services/googleSheets.service');
-      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id);
-    } catch (e) {}
+      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id, 'BREAK_ENDED');
+    } catch (e) {
+      console.warn("[GoogleSheets] Failed to enqueue BreakEnded sync event:", e);
+    }
 
     return res.status(200).json(new ApiResponse(true, "Break ended", updatedBreak));
   } catch (error: any) {
@@ -1477,6 +1492,13 @@ export const hrPunchIn = async (req: Request, res: Response) => {
       }
     });
 
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id, 'HR_PUNCH_IN');
+    } catch (e) {
+      console.warn("[GoogleSheets] Failed to enqueue HR PunchIn sync event:", e);
+    }
+
     return res.status(201).json(new ApiResponse(true, `Punched in for employee ${employee.firstName} ${employee.lastName}`, newLog));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
@@ -1561,6 +1583,13 @@ export const hrPunchOut = async (req: Request, res: Response) => {
       }
     });
 
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(null, 'ATTENDANCE', openLog.attendanceId, 'HR_PUNCH_OUT');
+    } catch (e) {
+      console.warn("[GoogleSheets] Failed to enqueue HR PunchOut sync event:", e);
+    }
+
     return res.status(200).json(new ApiResponse(true, "Punched out employee successfully", { status: calculatedStatus }));
   } catch (error: any) {
     return res.status(500).json(new ApiResponse(false, error.message));
@@ -1607,6 +1636,13 @@ export const hrResumeWork = async (req: Request, res: Response) => {
         browser: req.headers['user-agent'] || null
       }
     });
+
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(null, 'ATTENDANCE', record.id, 'HR_RESUME_WORK');
+    } catch (e) {
+      console.warn("[GoogleSheets] Failed to enqueue HR ResumeWork sync event:", e);
+    }
 
     return res.status(201).json(new ApiResponse(true, "Resumed work session for employee", newLog));
   } catch (error: any) {
@@ -1738,6 +1774,13 @@ export const hrCorrectAttendance = async (req: Request, res: Response) => {
         browser: req.headers['user-agent'] || null
       }
     });
+
+    try {
+      const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+      GoogleSheetsService.enqueueOutboxEvent(null, 'ATTENDANCE', record.id, 'ATTENDANCE_CORRECTED');
+    } catch (e) {
+      console.warn("[GoogleSheets] Failed to enqueue HR CorrectAttendance sync event:", e);
+    }
 
     return res.status(200).json(new ApiResponse(true, "Attendance record corrected successfully", updatedRecord));
   } catch (error: any) {

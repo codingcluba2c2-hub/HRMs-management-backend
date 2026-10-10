@@ -23,6 +23,13 @@ import {
 } from './attendance.controller';
 import { createCorrection, getMyCorrections, getPendingCorrections, approveCorrection, rejectCorrection } from './attendanceCorrection.controller';
 import { getSummary, getOperationsList, getAnalytics, getRecentActivities } from './attendanceOperations.controller';
+import {
+  downloadTemplate,
+  previewBulkImport,
+  confirmBulkImport,
+  exportErrorReport,
+  spreadsheetUpload
+} from './bulkImport.controller';
 import { authenticate } from '../../middlewares/authMiddleware';
 import { validateRequest } from '../../middlewares/validateRequest';
 import { createCorrectionSchema, updateCorrectionStatusSchema, manualAttendanceSchema } from './attendance.schema';
@@ -74,6 +81,13 @@ router.get('/my/charts', getMyCharts); // Data for employee's personal charts
 router.get('/my', getMyAttendance); // Employee's full history
 
 // ==========================================
+// Enterprise Bulk Attendance Import & Correction
+// ==========================================
+router.get('/bulk-import/template', downloadTemplate);
+router.post('/bulk-import/preview', spreadsheetUpload, previewBulkImport);
+router.post('/bulk-import/confirm', confirmBulkImport);
+router.post('/bulk-import/export-report', exportErrorReport);
+
 // Manual Admin Overrides
 // ==========================================
 router.post('/manual', validateRequest({ body: manualAttendanceSchema }), createManual); // Admin inserts a record

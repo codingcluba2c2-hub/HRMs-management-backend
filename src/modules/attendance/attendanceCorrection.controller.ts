@@ -211,6 +211,13 @@ export const approveCorrection = async (req: Request, res: Response) => {
           where: { id: finalRecordId },
           data: { grossHours, effectiveHours }
         });
+
+        try {
+          const { GoogleSheetsService } = await import('../../services/googleSheets.service');
+          GoogleSheetsService.enqueueOutboxEvent(correction.employee?.companyId || null, 'ATTENDANCE', finalRecordId, 'ATTENDANCE_CORRECTED');
+        } catch (e) {
+          console.warn("[GoogleSheets] Failed to enqueue ApproveCorrection sync event:", e);
+        }
       }
     }
 

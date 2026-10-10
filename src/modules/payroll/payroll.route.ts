@@ -8,7 +8,8 @@ import {
   getPayslipById,
   downloadPayslipPdf,
   createPayrollRecord,
-  deletePayrollRecord
+  deletePayrollRecord,
+  calculatePayrollPreview
 } from './payroll.controller';
 import { authenticate } from '../../middlewares/authMiddleware';
 import { validateRequest } from '../../middlewares/validateRequest';
@@ -21,6 +22,7 @@ router.use(authenticate);
 router.get('/summary', getPayrollSummary);
 router.get('/analytics', getPayrollAnalytics);
 router.get('/timeline', getTimelineActivities);
+router.get('/preview-calculation', calculatePayrollPreview);
 
 // Get payrolls (HR sees all, Employee sees own)
 router.get('/', getPayrollRecords);

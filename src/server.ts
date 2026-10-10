@@ -113,7 +113,7 @@ app.use('/api/employees', employeeRoutes);
 app.use('/api/shifts', shiftRoutes);
 app.use('/api/roster', rosterRoutes);
 app.use('/api/holidays', holidayRoutes);
-app.use('/api/attendance', attendanceRoutes);
+app.use('/api/attendance', attendanceRoutes); // Includes bulk-import routes
 app.use('/api/attendance-requests', attendanceRequestRoutes);
 app.use('/api/leaves', leaveRoutes);
 app.use('/api/payroll', payrollRoutes);
@@ -202,8 +202,17 @@ const startServer = async () => {
 
       repairTenantData().catch(err => console.error('repairTenantData error:', err));
       console.log('⚡ HRMS Backend Google Sheets Live Outbox System Active');
+      // Recover and process pending/interrupted outbox events on startup
+      (async () => {
+        try {
+          const { GoogleSheetsService } = await import('./services/googleSheets.service');
+          await GoogleSheetsService.recoverAndProcessPendingEvents();
+        } catch (err) {
+          console.error('[GoogleSheets Startup Recovery Error]:', err);
+        }
+      })();
 
-      // Start background worker to process Google Sheets live sync outbox
+      // Background worker tick to process any retries or queued items
       setInterval(async () => {
         try {
           const { GoogleSheetsService } = await import('./services/googleSheets.service');

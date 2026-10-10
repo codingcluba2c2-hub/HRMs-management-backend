@@ -7,7 +7,9 @@
     "dev": "nodemon",
     "build": "prisma generate && tsc",
     "db:push": "prisma db push",
-    "db:generate": "prisma generate"
+    "db:generate": "prisma generate",
+    "test:sheets": "ts-node src/modules/attendance/__tests__/googleSheetsSync.test.ts",
+    "test:sheets:live": "ts-node src/modules/attendance/__tests__/liveEndToEndSync.ts"
   },
   "dependencies": {
     "@bull-board/api": "^8.1.0",

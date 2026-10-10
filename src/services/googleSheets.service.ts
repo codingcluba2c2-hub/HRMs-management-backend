@@ -19,6 +19,22 @@ export interface SyncResult {
 }
 
 export class GoogleSheetsService {
+  // In-memory client cache to reuse authenticated Google API instances
+  private static sheetsClientCache = new Map<string, { sheets: any; spreadsheetId: string }>();
+
+  // In-memory set of already initialized spreadsheets to avoid redundant API schema queries
+  private static initializedWorksheetSpreadsheets = new Set<string>();
+
+  // In-memory row mapping caches for fast single-record row resolution
+  private static attendanceRowCache = new Map<string, Map<string, number>>();
+  private static employeeRowCache = new Map<string, Map<string, number>>();
+  private static leaveRowCache = new Map<string, Map<string, number>>();
+  private static rosterRowCache = new Map<string, Map<string, number>>();
+
+  // Concurrency controls
+  private static isProcessingQueue = false;
+  private static activeEntityLocks = new Set<string>();
+
   /**
    * Helper to sanitize and redact sensitive key details from error logs
    */
@@ -32,7 +48,24 @@ export class GoogleSheetsService {
   }
 
   /**
-   * Authenticate and get Google Sheets v4 API Client
+   * Invalidate in-memory row cache safely
+   */
+  public static invalidateRowCache(worksheet?: string, spreadsheetId?: string) {
+    if (spreadsheetId) {
+      if (!worksheet || worksheet === 'Attendance') this.attendanceRowCache.delete(spreadsheetId);
+      if (!worksheet || worksheet === 'Employees') this.employeeRowCache.delete(spreadsheetId);
+      if (!worksheet || worksheet === 'Leave Requests') this.leaveRowCache.delete(spreadsheetId);
+      if (!worksheet || worksheet === 'Shift Roster') this.rosterRowCache.delete(spreadsheetId);
+    } else {
+      if (!worksheet || worksheet === 'Attendance') this.attendanceRowCache.clear();
+      if (!worksheet || worksheet === 'Employees') this.employeeRowCache.clear();
+      if (!worksheet || worksheet === 'Leave Requests') this.leaveRowCache.clear();
+      if (!worksheet || worksheet === 'Shift Roster') this.rosterRowCache.clear();
+    }
+  }
+
+  /**
+   * Authenticate and get Google Sheets v4 API Client (reused and cached)
    */
   public static async getSheetsClient(companyId?: string) {
     try {
@@ -49,7 +82,6 @@ export class GoogleSheetsService {
       }
 
       if (!spreadsheetId || spreadsheetId.includes('example_sheet_id')) {
-        // Fallback check if any config exists in DB
         const anyConfig = await prisma.googleSheetsConfig.findFirst({
           where: { isEnabled: true }
         });
@@ -62,11 +94,16 @@ export class GoogleSheetsService {
         throw new Error("Google Spreadsheet ID is not configured. Please set GOOGLE_SPREADSHEET_ID in environment or admin settings.");
       }
 
+      const cacheKey = `${companyId || 'GLOBAL'}:${spreadsheetId}`;
+      if (this.sheetsClientCache.has(cacheKey)) {
+        return this.sheetsClientCache.get(cacheKey)!;
+      }
+
       // 2. Resolve Google Service Account Credentials
       let auth: any;
       const keyFilePath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH 
         ? path.resolve(process.cwd(), process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH)
-        : path.resolve(process.cwd(), 'hrms-management-500604-b65f35625a01.json');
+        : path.resolve(process.cwd(), 'hrms-management-500604-924ea58afcca.json');
 
       if (fs.existsSync(keyFilePath)) {
         const keyData = JSON.parse(fs.readFileSync(keyFilePath, 'utf8'));
@@ -95,7 +132,9 @@ export class GoogleSheetsService {
       }
 
       const sheets = google.sheets({ version: 'v4', auth });
-      return { sheets, spreadsheetId };
+      const clientEntry = { sheets, spreadsheetId };
+      this.sheetsClientCache.set(cacheKey, clientEntry);
+      return clientEntry;
     } catch (error: any) {
       const cleanMsg = this.sanitizeError(error);
       throw new Error(`Google Sheets Auth Failed: ${cleanMsg}`);
@@ -109,7 +148,7 @@ export class GoogleSheetsService {
     try {
       const { sheets, spreadsheetId } = await this.getSheetsClient(companyId);
       const meta = await sheets.spreadsheets.get({ spreadsheetId });
-      const sheetTitles = meta.data.sheets?.map(s => s.properties?.title || '') || [];
+      const sheetTitles = meta.data.sheets?.map((s: any) => s.properties?.title || '') || [];
 
       return {
         success: true,
@@ -131,10 +170,15 @@ export class GoogleSheetsService {
    */
   public static async initializeWorksheets(companyId?: string) {
     const { sheets, spreadsheetId } = await this.getSheetsClient(companyId);
+
+    // Skip if already initialized for this process lifetime
+    if (this.initializedWorksheetSpreadsheets.has(spreadsheetId)) {
+      return { success: true, message: 'Worksheets already verified and initialized.' };
+    }
     
     // Get existing sheets
     const meta = await sheets.spreadsheets.get({ spreadsheetId });
-    const existingTitles = new Set(meta.data.sheets?.map(s => s.properties?.title || '') || []);
+    const existingTitles = new Set(meta.data.sheets?.map((s: any) => s.properties?.title || '') || []);
 
     const requiredSheets = [
       {
@@ -201,7 +245,216 @@ export class GoogleSheetsService {
       }
     }
 
+    this.initializedWorksheetSpreadsheets.add(spreadsheetId);
     return { success: true, message: 'Initialized standard worksheets and header schemas.' };
+  }
+
+  /**
+   * Fast load of Attendance Column A (Record ID to Row Number)
+   */
+  private static async loadAttendanceRowMap(sheets: any, spreadsheetId: string): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    try {
+      const res = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `'Attendance'!A2:A`
+      });
+      const rows = res.data.values || [];
+      const seen = new Set<string>();
+
+      for (let i = 0; i < rows.length; i++) {
+        const recordId = rows[i][0];
+        if (recordId) {
+          const cleanId = String(recordId).trim();
+          const rowNum = i + 2; // Row 1 is header
+          if (seen.has(cleanId)) {
+            console.warn(`[GoogleSheets] Duplicate Record ID detected in Attendance worksheet: ${cleanId} at row ${rowNum}`);
+          } else {
+            seen.add(cleanId);
+            map.set(cleanId, rowNum);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[GoogleSheets] Failed to load Attendance row mapping:', this.sanitizeError(err));
+    }
+    return map;
+  }
+
+  /**
+   * Targeted live synchronization for a single attendance record
+   * Resolves row via immutable Record ID and updates/appends with sub-2s latency.
+   */
+  public static async syncSingleAttendanceRecord(recordId: string, companyId?: string, actionName = 'ATTENDANCE_RECORD_UPDATED') {
+    const startTime = new Date();
+    const lockKey = `ATTENDANCE:${recordId}`;
+
+    if (this.activeEntityLocks.has(lockKey)) {
+      console.log(`⚡ [GoogleSheets] Lock active for attendance record ${recordId}, will sync on release.`);
+      return { success: true, updated: false, inserted: false, skipped: true };
+    }
+
+    this.activeEntityLocks.add(lockKey);
+    try {
+      // 1. Fetch latest committed state from PostgreSQL
+      const rec = await prisma.attendanceRecord.findUnique({
+        where: { id: recordId },
+        include: {
+          employee: {
+            include: { department: true, company: true }
+          },
+          shift: true,
+          logs: { orderBy: { punchIn: 'asc' } },
+          breaks: { orderBy: { breakStart: 'asc' } }
+        }
+      });
+
+      if (!rec) {
+        console.warn(`[GoogleSheets] Attendance record ${recordId} not found in database.`);
+        return { success: true, updated: false, inserted: false, skipped: true };
+      }
+
+      const { sheets, spreadsheetId } = await this.getSheetsClient(companyId || rec.employee?.companyId || undefined);
+      await this.initializeWorksheets(companyId || rec.employee?.companyId || undefined);
+
+      // 2. Compute canonical attendance row values
+      const sortedLogs = [...rec.logs].sort((a, b) => new Date(a.punchIn).getTime() - new Date(b.punchIn).getTime());
+      const firstLog = sortedLogs[0];
+      const lastLog = sortedLogs[sortedLogs.length - 1];
+
+      const firstPunchIn = firstLog?.punchIn;
+      const hasOpenSession = Boolean(lastLog && !lastLog.punchOut);
+      const lastPunchOut = hasOpenSession ? null : lastLog?.punchOut;
+
+      const hasOpenBreak = rec.breaks.some(b => !b.breakEnd);
+
+      let displayStatus = rec.status;
+      if (hasOpenBreak) {
+        displayStatus = 'ON_BREAK';
+      } else if (hasOpenSession) {
+        displayStatus = 'CURRENTLY_WORKING';
+      }
+
+      // Calculate total break minutes accurately (including open break elapsed minutes)
+      const totalBreakMins = rec.breaks.reduce((acc, b) => {
+        if (b.durationMinutes && b.durationMinutes > 0) return acc + b.durationMinutes;
+        if (b.durationSeconds && b.durationSeconds > 0) return acc + Math.round(b.durationSeconds / 60);
+        if (b.breakStart && b.breakEnd) {
+          return acc + Math.max(0, Math.round((new Date(b.breakEnd).getTime() - new Date(b.breakStart).getTime()) / 60000));
+        }
+        if (b.breakStart && !b.breakEnd) {
+          return acc + Math.max(0, Math.round((Date.now() - new Date(b.breakStart).getTime()) / 60000));
+        }
+        return acc;
+      }, 0);
+
+      const effectiveMins = Math.max(0, Math.round((rec.effectiveHours || 0) * 60));
+      const workingHoursStr = `${(rec.effectiveHours || 0).toFixed(1)} hrs`;
+
+      const rowValues = [
+        rec.id, // Column A: Record ID (Immutable unique key)
+        rec.date ? new Date(rec.date).toISOString().split('T')[0] : 'N/A', // Column B: Date
+        rec.employee?.employeeId || rec.employeeId, // Column C: Employee ID
+        rec.employee ? `${rec.employee.firstName} ${rec.employee.lastName}`.trim() : 'N/A', // Column D: Employee Name
+        rec.employee?.department?.name || 'N/A', // Column E: Department
+        displayStatus, // Column F: Status
+        firstPunchIn ? new Date(firstPunchIn).toLocaleTimeString('en-US', { hour12: true }) : 'N/A', // Column G: Punch In
+        lastPunchOut ? new Date(lastPunchOut).toLocaleTimeString('en-US', { hour12: true }) : 'N/A', // Column H: Punch Out
+        workingHoursStr, // Column I: Working Hours
+        totalBreakMins, // Column J: Break Mins
+        effectiveMins, // Column K: Effective Mins
+        rec.shift?.name || 'Default Shift', // Column L: Shift
+        new Date().toISOString() // Column M: Last Updated
+      ];
+
+      // 3. Resolve row in sheet
+      let rowMap = this.attendanceRowCache.get(spreadsheetId);
+      if (!rowMap) {
+        rowMap = await this.loadAttendanceRowMap(sheets, spreadsheetId);
+        this.attendanceRowCache.set(spreadsheetId, rowMap);
+      }
+
+      let existingRow = rowMap.get(rec.id);
+      let isUpdate = false;
+      let targetRowNum = 0;
+
+      if (existingRow) {
+        // Update existing row
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `'Attendance'!A${existingRow}:M${existingRow}`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: { values: [rowValues] }
+        });
+        isUpdate = true;
+        targetRowNum = existingRow;
+      } else {
+        // Append new row
+        const appendRes = await sheets.spreadsheets.values.append({
+          spreadsheetId,
+          range: `'Attendance'!A1`,
+          valueInputOption: 'USER_ENTERED',
+          insertDataOption: 'INSERT_ROWS',
+          requestBody: { values: [rowValues] }
+        });
+
+        const updatedRange = appendRes.data.updates?.updatedRange || '';
+        const match = updatedRange.match(/!A(\d+):/i);
+        if (match) {
+          targetRowNum = parseInt(match[1], 10);
+        } else {
+          targetRowNum = rowMap.size + 2;
+        }
+        rowMap.set(rec.id, targetRowNum);
+      }
+
+      // 4. Record audit entry in Sync Status worksheet
+      try {
+        const syncStatusRow = [
+          `SYNC-${Date.now()}`,
+          'Attendance',
+          `LIVE: ${actionName}`,
+          'SUCCESS',
+          isUpdate ? 0 : 1,
+          isUpdate ? 1 : 0,
+          0,
+          0,
+          0,
+          startTime.toISOString(),
+          new Date().toISOString(),
+          'None'
+        ];
+        await sheets.spreadsheets.values.append({
+          spreadsheetId,
+          range: `'Sync Status'!A1`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: { values: [syncStatusRow] }
+        });
+      } catch (auditErr) {
+        console.warn("[GoogleSheets] Could not append audit row to 'Sync Status':", this.sanitizeError(auditErr));
+      }
+
+      // 5. Update DB config status
+      await prisma.googleSheetsConfig.updateMany({
+        where: companyId ? { companyId } : {},
+        data: {
+          lastSyncStatus: 'SUCCESS',
+          lastSyncAt: new Date(),
+          lastSyncError: null
+        }
+      });
+
+      console.log(`✅ [GoogleSheets] ${isUpdate ? 'Updated' : 'Inserted'} attendance record ${rec.id} at row ${targetRowNum} (${Date.now() - startTime.getTime()}ms)`);
+
+      return {
+        success: true,
+        inserted: !isUpdate,
+        updated: isUpdate,
+        row: targetRowNum
+      };
+    } finally {
+      this.activeEntityLocks.delete(lockKey);
+    }
   }
 
   /**
@@ -214,7 +467,6 @@ export class GoogleSheetsService {
       await this.initializeWorksheets(companyId);
 
       const whereClause: any = { isDeleted: false };
-      // Sync all active employees to the connected sheet
       const employees = await prisma.employee.findMany({
         where: whereClause,
         include: {
@@ -235,7 +487,7 @@ export class GoogleSheetsService {
 
       for (let i = 1; i < existingRows.length; i++) {
         const empId = existingRows[i][0];
-        if (empId) idToRowMap.set(String(empId), i + 1);
+        if (empId) idToRowMap.set(String(empId).trim(), i + 1);
       }
 
       let inserted = 0;
@@ -246,7 +498,7 @@ export class GoogleSheetsService {
       for (const emp of employees) {
         const rowValues = [
           emp.employeeId,
-          `${emp.firstName} ${emp.lastName}`,
+          `${emp.firstName} ${emp.lastName}`.trim(),
           emp.email,
           emp.phone || 'N/A',
           emp.department?.name || 'Unassigned',
@@ -254,7 +506,7 @@ export class GoogleSheetsService {
           emp.employmentType || 'FULL_TIME',
           emp.joiningDate ? new Date(emp.joiningDate).toISOString().split('T')[0] : 'N/A',
           emp.status || 'ACTIVE',
-          emp.manager ? `${emp.manager.firstName} ${emp.manager.lastName}` : 'N/A',
+          emp.manager ? `${emp.manager.firstName} ${emp.manager.lastName}`.trim() : 'N/A',
           emp.company?.name || 'N/A',
           new Date().toISOString()
         ];
@@ -322,7 +574,7 @@ export class GoogleSheetsService {
   }
 
   /**
-   * Synchronize Attendance Worksheet
+   * Synchronize Attendance Worksheet (Full reconciliation)
    */
   public static async syncAttendance(companyId?: string): Promise<SyncResult> {
     const startTime = new Date();
@@ -330,17 +582,14 @@ export class GoogleSheetsService {
       const { sheets, spreadsheetId } = await this.getSheetsClient(companyId);
       await this.initializeWorksheets(companyId);
 
-      const whereClause: any = {};
-      // Sync all attendance records to the connected sheet
       const records = await prisma.attendanceRecord.findMany({
-        where: whereClause,
         include: {
           employee: {
             include: { department: true }
           },
           shift: true,
-          logs: true,
-          breaks: true
+          logs: { orderBy: { punchIn: 'asc' } },
+          breaks: { orderBy: { breakStart: 'asc' } }
         },
         take: 1000,
         orderBy: { date: 'desc' }
@@ -355,7 +604,7 @@ export class GoogleSheetsService {
 
       for (let i = 1; i < existingRows.length; i++) {
         const recordId = existingRows[i][0];
-        if (recordId) idToRowMap.set(String(recordId), i + 1);
+        if (recordId) idToRowMap.set(String(recordId).trim(), i + 1);
       }
 
       let inserted = 0;
@@ -371,16 +620,35 @@ export class GoogleSheetsService {
         const firstPunchIn = firstLog?.punchIn;
         const hasOpenSession = Boolean(lastLog && !lastLog.punchOut);
         const lastPunchOut = hasOpenSession ? null : lastLog?.punchOut;
-        const displayStatus = hasOpenSession ? 'CURRENTLY_WORKING' : rec.status;
 
-        const totalBreakMins = rec.breaks.reduce((acc, b) => acc + (b.durationMinutes || 0), 0);
+        const hasOpenBreak = rec.breaks.some(b => !b.breakEnd);
+
+        let displayStatus = rec.status;
+        if (hasOpenBreak) {
+          displayStatus = 'ON_BREAK';
+        } else if (hasOpenSession) {
+          displayStatus = 'CURRENTLY_WORKING';
+        }
+
+        const totalBreakMins = rec.breaks.reduce((acc, b) => {
+          if (b.durationMinutes && b.durationMinutes > 0) return acc + b.durationMinutes;
+          if (b.durationSeconds && b.durationSeconds > 0) return acc + Math.round(b.durationSeconds / 60);
+          if (b.breakStart && b.breakEnd) {
+            return acc + Math.max(0, Math.round((new Date(b.breakEnd).getTime() - new Date(b.breakStart).getTime()) / 60000));
+          }
+          if (b.breakStart && !b.breakEnd) {
+            return acc + Math.max(0, Math.round((Date.now() - new Date(b.breakStart).getTime()) / 60000));
+          }
+          return acc;
+        }, 0);
+
         const effectiveMins = Math.max(0, Math.round((rec.effectiveHours || 0) * 60));
 
         const rowValues = [
           rec.id,
           rec.date ? new Date(rec.date).toISOString().split('T')[0] : 'N/A',
           rec.employee?.employeeId || rec.employeeId,
-          rec.employee ? `${rec.employee.firstName} ${rec.employee.lastName}` : 'N/A',
+          rec.employee ? `${rec.employee.firstName} ${rec.employee.lastName}`.trim() : 'N/A',
           rec.employee?.department?.name || 'N/A',
           displayStatus,
           firstPunchIn ? new Date(firstPunchIn).toLocaleTimeString('en-US', { hour12: true }) : 'N/A',
@@ -422,6 +690,10 @@ export class GoogleSheetsService {
         });
       }
 
+      // Refresh in-memory row cache
+      const freshRowMap = await this.loadAttendanceRowMap(sheets, spreadsheetId);
+      this.attendanceRowCache.set(spreadsheetId, freshRowMap);
+
       await this.logSyncJob({
         companyId,
         worksheet: 'Attendance',
@@ -458,10 +730,7 @@ export class GoogleSheetsService {
       const { sheets, spreadsheetId } = await this.getSheetsClient(companyId);
       await this.initializeWorksheets(companyId);
 
-      const whereClause: any = {};
-      // Sync all leave requests to the connected sheet
       const requests = await prisma.leaveRequest.findMany({
-        where: whereClause,
         include: {
           employee: { include: { department: true } },
           approvalHistory: { include: { actedBy: true } }
@@ -479,7 +748,7 @@ export class GoogleSheetsService {
 
       for (let i = 1; i < existingRows.length; i++) {
         const reqId = existingRows[i][0];
-        if (reqId) idToRowMap.set(String(reqId), i + 1);
+        if (reqId) idToRowMap.set(String(reqId).trim(), i + 1);
       }
 
       let inserted = 0;
@@ -497,7 +766,7 @@ export class GoogleSheetsService {
         const rowValues = [
           req.id,
           req.employee?.employeeId || req.employeeId,
-          req.employee ? `${req.employee.firstName} ${req.employee.lastName}` : 'N/A',
+          req.employee ? `${req.employee.firstName} ${req.employee.lastName}`.trim() : 'N/A',
           req.employee?.department?.name || 'N/A',
           req.leaveType,
           req.startDate ? new Date(req.startDate).toISOString().split('T')[0] : 'N/A',
@@ -506,7 +775,7 @@ export class GoogleSheetsService {
           (req.description || '').replace(/\r?\n|\r/g, ' '),
           req.status,
           req.createdAt ? new Date(req.createdAt).toISOString() : 'N/A',
-          lastReviewer ? `${lastReviewer.firstName} ${lastReviewer.lastName}` : 'N/A',
+          lastReviewer ? `${lastReviewer.firstName} ${lastReviewer.lastName}`.trim() : 'N/A',
           new Date().toISOString()
         ];
 
@@ -576,10 +845,7 @@ export class GoogleSheetsService {
       const { sheets, spreadsheetId } = await this.getSheetsClient(companyId);
       await this.initializeWorksheets(companyId);
 
-      const whereClause: any = {};
-      // Sync all shift roster entries to the connected sheet
       const rosterEntries = await prisma.rosterEntry.findMany({
-        where: whereClause,
         include: {
           employee: { include: { department: true } },
           shift: true
@@ -597,7 +863,7 @@ export class GoogleSheetsService {
 
       for (let i = 1; i < existingRows.length; i++) {
         const entryId = existingRows[i][0];
-        if (entryId) idToRowMap.set(String(entryId), i + 1);
+        if (entryId) idToRowMap.set(String(entryId).trim(), i + 1);
       }
 
       let inserted = 0;
@@ -609,7 +875,7 @@ export class GoogleSheetsService {
         const rowValues = [
           entry.id,
           entry.employee?.employeeId || entry.employeeId,
-          entry.employee ? `${entry.employee.firstName} ${entry.employee.lastName}` : 'N/A',
+          entry.employee ? `${entry.employee.firstName} ${entry.employee.lastName}`.trim() : 'N/A',
           entry.employee?.department?.name || 'N/A',
           entry.shift?.name || 'General Shift',
           entry.shift?.startTime || '09:00',
@@ -757,12 +1023,17 @@ export class GoogleSheetsService {
   }
 
   /**
-   * Enqueue sync mutation to Outbox for non-blocking asynchronous processing
+   * Enqueue sync mutation to Outbox for reliable, non-blocking asynchronous processing
    */
-  public static async enqueueOutboxEvent(companyId: string | null, entityType: 'EMPLOYEE' | 'ATTENDANCE' | 'LEAVE_REQUEST' | 'SHIFT_ROSTER', entityId: string, action = 'UPSERT') {
+  public static async enqueueOutboxEvent(
+    companyId: string | null,
+    entityType: 'EMPLOYEE' | 'ATTENDANCE' | 'LEAVE_REQUEST' | 'SHIFT_ROSTER',
+    entityId: string,
+    action = 'UPSERT'
+  ) {
     try {
-      console.log(`⚡ [GoogleSheets] Live outbox event enqueued: ${entityType} (ID: ${entityId})`);
-      await prisma.googleSheetsSyncOutbox.create({
+      console.log(`⚡ [GoogleSheets] Live outbox event enqueued: ${entityType} (ID: ${entityId}, Action: ${action})`);
+      const event = await prisma.googleSheetsSyncOutbox.create({
         data: {
           companyId,
           entityType,
@@ -772,75 +1043,126 @@ export class GoogleSheetsService {
         }
       });
 
-      // Process outbox IMMEDIATELY in background without blocking caller HTTP response
+      // Trigger targeted outbox processor immediately without blocking the caller HTTP response
       setImmediate(async () => {
         try {
-          if (entityType === 'ATTENDANCE') {
-            await this.syncAttendance();
-          } else if (entityType === 'EMPLOYEE') {
-            await this.syncEmployees();
-          } else if (entityType === 'LEAVE_REQUEST') {
-            await this.syncLeaveRequests();
-          } else if (entityType === 'SHIFT_ROSTER') {
-            await this.syncShiftRoster();
-          }
           await this.processOutboxQueue();
         } catch (err) {
           console.error("Outbox background worker error:", this.sanitizeError(err));
         }
       });
+
+      return event;
     } catch (e) {
       console.error("Failed to enqueue Google Sheets sync outbox event:", this.sanitizeError(e));
+      return null;
     }
   }
 
   /**
-   * Process pending items in Outbox queue with exponential backoff & retries
+   * Process pending items in Outbox queue with concurrency control, targeted single-record sync, and exponential backoff
    */
   public static async processOutboxQueue() {
-    const pendingEvents = await prisma.googleSheetsSyncOutbox.findMany({
-      where: {
-        status: { in: ['PENDING', 'FAILED'] },
-        retryCount: { lt: 3 }
-      },
-      take: 20,
-      orderBy: { createdAt: 'asc' }
-    });
+    if (this.isProcessingQueue) {
+      return;
+    }
+    this.isProcessingQueue = true;
 
-    if (pendingEvents.length === 0) return;
+    try {
+      const pendingEvents = await prisma.googleSheetsSyncOutbox.findMany({
+        where: {
+          status: { in: ['PENDING', 'FAILED', 'RETRY_SCHEDULED'] },
+          retryCount: { lt: 5 }
+        },
+        take: 25,
+        orderBy: { createdAt: 'asc' }
+      });
 
-    for (const evt of pendingEvents) {
-      try {
-        await prisma.googleSheetsSyncOutbox.update({
-          where: { id: evt.id },
-          data: { status: 'PROCESSING' }
-        });
+      if (pendingEvents.length === 0) return;
 
-        if (evt.entityType === 'EMPLOYEE') {
-          await this.syncEmployees(evt.companyId || undefined);
-        } else if (evt.entityType === 'ATTENDANCE') {
-          await this.syncAttendance(evt.companyId || undefined);
-        } else if (evt.entityType === 'LEAVE_REQUEST') {
-          await this.syncLeaveRequests(evt.companyId || undefined);
-        } else if (evt.entityType === 'SHIFT_ROSTER') {
-          await this.syncShiftRoster(evt.companyId || undefined);
-        }
+      for (const evt of pendingEvents) {
+        try {
+          await prisma.googleSheetsSyncOutbox.update({
+            where: { id: evt.id },
+            data: { status: 'PROCESSING' }
+          });
 
-        await prisma.googleSheetsSyncOutbox.update({
-          where: { id: evt.id },
-          data: { status: 'COMPLETED' }
-        });
-      } catch (error: any) {
-        const errorMsg = this.sanitizeError(error);
-        await prisma.googleSheetsSyncOutbox.update({
-          where: { id: evt.id },
-          data: {
-            status: 'FAILED',
-            retryCount: evt.retryCount + 1,
-            lastError: errorMsg
+          if (evt.entityType === 'ATTENDANCE') {
+            await this.syncSingleAttendanceRecord(evt.entityId, evt.companyId || undefined, evt.action);
+          } else if (evt.entityType === 'EMPLOYEE') {
+            await this.syncEmployees(evt.companyId || undefined);
+          } else if (evt.entityType === 'LEAVE_REQUEST') {
+            await this.syncLeaveRequests(evt.companyId || undefined);
+          } else if (evt.entityType === 'SHIFT_ROSTER') {
+            await this.syncShiftRoster(evt.companyId || undefined);
           }
-        });
+
+          // Mark current event completed
+          await prisma.googleSheetsSyncOutbox.update({
+            where: { id: evt.id },
+            data: { status: 'COMPLETED', updatedAt: new Date() }
+          });
+
+          // Prevent stale overwrites: supersede older pending/processing events for the same record
+          if (evt.entityType === 'ATTENDANCE') {
+            await prisma.googleSheetsSyncOutbox.updateMany({
+              where: {
+                entityType: evt.entityType,
+                entityId: evt.entityId,
+                status: { in: ['PENDING', 'PROCESSING', 'RETRY_SCHEDULED'] },
+                createdAt: { lte: evt.createdAt },
+                id: { not: evt.id }
+              },
+              data: { status: 'COMPLETED' }
+            });
+          }
+        } catch (error: any) {
+          const errorMsg = this.sanitizeError(error);
+          console.error(`[GoogleSheets Outbox] Failed to process event ${evt.id}:`, errorMsg);
+          const nextRetry = evt.retryCount + 1;
+          const isDeadLetter = nextRetry >= 5;
+
+          await prisma.googleSheetsSyncOutbox.update({
+            where: { id: evt.id },
+            data: {
+              status: isDeadLetter ? 'FAILED' : 'RETRY_SCHEDULED',
+              retryCount: nextRetry,
+              lastError: errorMsg,
+              updatedAt: new Date()
+            }
+          });
+
+          if (isDeadLetter) {
+            await this.logSyncJob({
+              companyId: evt.companyId || undefined,
+              worksheet: evt.entityType,
+              triggerType: `OUTBOX_DEAD_LETTER: ${evt.action}`,
+              status: 'FAILED',
+              errorMessage: errorMsg,
+              failed: 1,
+              startedAt: evt.createdAt,
+              completedAt: new Date()
+            });
+          }
+        }
       }
+    } finally {
+      this.isProcessingQueue = false;
+    }
+  }
+
+  /**
+   * Recover pending/interrupted events after process restart
+   */
+  public static async recoverAndProcessPendingEvents() {
+    try {
+      await prisma.googleSheetsSyncOutbox.updateMany({
+        where: { status: 'PROCESSING' },
+        data: { status: 'PENDING' }
+      });
+      await this.processOutboxQueue();
+    } catch (err) {
+      console.error("[GoogleSheets] Failed to recover pending outbox events:", this.sanitizeError(err));
     }
   }
 
@@ -898,6 +1220,20 @@ export class GoogleSheetsService {
     const leaveCount = await prisma.leaveRequest.count();
     const rosterCount = await prisma.rosterEntry.count();
 
+    const pendingOutboxCount = await prisma.googleSheetsSyncOutbox.count({
+      where: {
+        status: { in: ['PENDING', 'PROCESSING', 'RETRY_SCHEDULED'] },
+        ...(companyId ? { companyId } : {})
+      }
+    });
+
+    const failedOutboxCount = await prisma.googleSheetsSyncOutbox.count({
+      where: {
+        status: 'FAILED',
+        ...(companyId ? { companyId } : {})
+      }
+    });
+
     const recentJobs = await prisma.googleSheetsSyncJob.findMany({
       where: companyId ? { companyId } : {},
       orderBy: { createdAt: 'desc' },
@@ -913,6 +1249,10 @@ export class GoogleSheetsService {
 
     const testRes = await this.testConnection(companyId);
 
+    const overallHealth = failedOutboxCount > 0 
+      ? 'DEGRADED' 
+      : (pendingOutboxCount > 0 ? 'SYNCING' : (testRes.success ? 'HEALTHY' : 'ERROR'));
+
     return {
       isEnabled: config?.isEnabled ?? true,
       spreadsheetId,
@@ -923,12 +1263,15 @@ export class GoogleSheetsService {
       lastSyncAt: config?.lastSyncAt || null,
       lastSyncStatus: config?.lastSyncStatus || 'IDLE',
       lastSyncError: config?.lastSyncError || null,
+      syncHealth: overallHealth,
       counts: {
         employees: employeeCount,
         attendance: attendanceCount,
         leaveRequests: leaveCount,
         shiftRoster: rosterCount
       },
+      pendingOutboxCount,
+      failedOutboxCount,
       failedJobCount,
       recentJobs
     };

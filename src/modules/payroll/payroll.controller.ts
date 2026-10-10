@@ -132,3 +132,19 @@ export const deletePayrollRecord = async (req: AuthRequest, res: Response) => {
   }
 };
 
+export const calculatePayrollPreview = async (req: AuthRequest, res: Response) => {
+  try {
+    const employeeId = req.query.employeeId as string;
+    if (!employeeId) {
+      return res.status(400).json(new ApiResponse(false, "employeeId is required"));
+    }
+    const month = parseInt(req.query.month as string) || (new Date().getMonth() + 1);
+    const year = parseInt(req.query.year as string) || (new Date().getFullYear());
+
+    const preview = await payrollService.calculatePayrollPreview(employeeId, month, year);
+    return res.status(200).json(new ApiResponse(true, "Payroll preview calculated successfully", preview));
+  } catch (error: any) {
+    return res.status(500).json(new ApiResponse(false, error.message || "Failed to calculate payroll preview"));
+  }
+};
+

@@ -145,7 +145,9 @@ export async function getManagerScopedEmployeeFilter(user?: any): Promise<Prisma
       // Exclude Super Admin records from team views
       NOT: [
         { email: { equals: 'superadmin@hrmspro.com', mode: 'insensitive' } },
-        { user: { role: { name: 'SUPER_ADMIN' } } }
+        { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
+        { user: { role: { name: 'SUPER_ADMIN' } } },
+        { AND: [{ firstName: { equals: 'Super', mode: 'insensitive' } }, { lastName: { equals: 'Admin', mode: 'insensitive' } }] }
       ]
     };
   }

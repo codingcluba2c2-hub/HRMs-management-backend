@@ -12,8 +12,8 @@ export const getAnnouncements = async (req: AuthRequest, res: Response) => {
 
     let hrAdminId = userId;
 
-    // If Employee, find their HR Admin (createdById)
-    if (userRole === 'EMPLOYEE' && userId) {
+    // If Employee or Manager, find their HR Admin (createdById)
+    if ((userRole === 'EMPLOYEE' || userRole === 'MANAGER') && userId) {
       const emp = await prisma.employee.findFirst({
         where: { userId },
         select: { createdById: true }
@@ -27,12 +27,12 @@ export const getAnnouncements = async (req: AuthRequest, res: Response) => {
     const announcements = await prisma.announcement.findMany({
       where: {
         isActive: true,
-        ...(hrAdminId ? {
-          OR: [
-            { authorId: hrAdminId },
-            ...(userId ? [{ authorId: userId }] : [])
-          ]
-        } : {})
+        OR: [
+          ...(hrAdminId ? [{ authorId: hrAdminId }] : []),
+          ...(userId ? [{ authorId: userId }] : []),
+          { target: 'ALL' },
+          ...(userRole === 'MANAGER' ? [{ target: 'MANAGER' }] : [])
+        ]
       },
       orderBy: { createdAt: 'desc' },
       take: 20,
