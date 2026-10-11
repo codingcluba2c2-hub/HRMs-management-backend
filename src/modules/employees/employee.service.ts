@@ -128,7 +128,8 @@ export class EmployeeService {
               data: {
                 name: data.departmentName,
                 code: `DEPT-${Math.floor(100+Math.random()*900)}`,
-                createdById: hrAdminId || null
+                createdById: hrAdminId || null,
+                companyId: hrAdmin?.companyId || null
               }
             });
           }

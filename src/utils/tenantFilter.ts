@@ -102,7 +102,7 @@ export const getTenantCreatorId = async (user?: any): Promise<string> => {
   return creatorId;
 };
 
-export const getTenantDepartmentFilter = async (user?: { id?: string; role?: string; email?: string; companyId?: string }): Promise<Prisma.DepartmentWhereInput> => {
+export const getTenantDepartmentFilter = async (user?: { id?: string; userId?: string; role?: string; email?: string; companyId?: string }): Promise<Prisma.DepartmentWhereInput> => {
   const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
   const role = normalizeRole(rawRole);
 
@@ -110,36 +110,40 @@ export const getTenantDepartmentFilter = async (user?: { id?: string; role?: str
     return {};
   }
 
+  const userId = user?.id || (user as any)?.userId;
+  const companyId = user?.companyId;
+
   if (role === CANONICAL_ROLES.MANAGER) {
     const scope = await resolveUserManagerScope(user);
     if (scope.departmentIds.length > 0) {
       return {
         id: { in: scope.departmentIds },
-        ...(user?.companyId ? { companyId: user.companyId } : {})
+        ...(companyId ? { companyId } : {})
       };
     }
     return { id: 'NO_MATCH' };
   }
 
-  if (user?.companyId) {
-    return {
-      OR: [
-        { companyId: user.companyId },
-        { createdById: null }
-      ]
-    };
+  const creatorId = await getTenantCreatorId(user);
+
+  const matchConditions: Prisma.DepartmentWhereInput[] = [
+    { createdById: null }
+  ];
+
+  if (userId) {
+    matchConditions.push({ createdById: userId });
+  }
+  if (creatorId && creatorId !== userId) {
+    matchConditions.push({ createdById: creatorId });
+  }
+  if (companyId) {
+    matchConditions.push({ companyId });
   }
 
-  const creatorId = await getTenantCreatorId(user);
-  return {
-    OR: [
-      { createdById: null },
-      { createdById: creatorId }
-    ]
-  };
+  return { OR: matchConditions };
 };
 
-export const getTenantDesignationFilter = async (user?: { id?: string; role?: string; email?: string; companyId?: string }): Promise<Prisma.DesignationWhereInput> => {
+export const getTenantDesignationFilter = async (user?: { id?: string; userId?: string; role?: string; email?: string; companyId?: string }): Promise<Prisma.DesignationWhereInput> => {
   const rawRole = typeof user?.role === 'string' ? user.role : (user?.role as any)?.name || '';
   const role = normalizeRole(rawRole);
 
@@ -157,13 +161,27 @@ export const getTenantDesignationFilter = async (user?: { id?: string; role?: st
     return { id: 'NO_MATCH' };
   }
 
+  const userId = user?.id || (user as any)?.userId;
   const creatorId = await getTenantCreatorId(user);
-  return {
-    OR: [
-      { createdById: null },
-      { createdById: creatorId }
-    ]
-  };
+  const companyId = user?.companyId;
+
+  const matchConditions: Prisma.DesignationWhereInput[] = [
+    { createdById: null }
+  ];
+
+  if (userId) {
+    matchConditions.push({ createdById: userId });
+  }
+  if (creatorId && creatorId !== userId) {
+    matchConditions.push({ createdById: creatorId });
+  }
+  if (companyId) {
+    matchConditions.push({
+      department: { companyId }
+    });
+  }
+
+  return { OR: matchConditions };
 };
 
 export const getTenantDocumentTypeFilter = async (user?: { id?: string; role?: string; email?: string }): Promise<Prisma.DocumentTypeWhereInput> => {

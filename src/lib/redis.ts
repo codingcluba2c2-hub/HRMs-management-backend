@@ -39,7 +39,7 @@ export const cacheMetrics = {
 
 export default redis;
 
-const memoryCacheMap = new Map<string, { data: any; expiry: number }>();
+export const memoryCacheMap = new Map<string, { data: any; expiry: number }>();
 
 export async function withCache<T>(key: string, ttlSeconds: number, fetcher: () => Promise<T>): Promise<T> {
   const cachedMem = memoryCacheMap.get(key);

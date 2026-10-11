@@ -1,6 +1,7 @@
 import { prisma } from '../../lib/prisma';
 import { withCache } from '../../lib/redis';
 import { getTenantEmployeeFilter, getTenantDepartmentFilter } from '../../utils/tenantFilter';
+import { resolveUserCompanyContext } from '../announcements/announcement.controller';
 
 export const getSuperAdminStats = async () => {
   return await withCache('dashboard:superadmin', 60, async () => {
@@ -183,6 +184,15 @@ export const getHRManagerStats = async (trend: string = '30d', user?: any) => {
     const tenantFilter = getTenantEmployeeFilter(user);
     const tenantDeptFilter = await getTenantDepartmentFilter(user);
 
+    const { companyId, hrAdminId, companyName } = await resolveUserCompanyContext(user);
+    const companyConditions: any[] = [];
+    if (companyId) companyConditions.push({ companyId });
+    if (hrAdminId) companyConditions.push({ authorId: hrAdminId });
+    if (companyName && companyName.trim()) {
+      companyConditions.push({ author: { companyName: { equals: companyName.trim(), mode: 'insensitive' } } });
+    }
+    const tenantAnnouncementWhere = companyConditions.length > 0 ? { OR: companyConditions } : { authorId: user?.id || 'NO_USER' };
+
     const [
       totalEmployees,
       presentToday,
@@ -214,10 +224,10 @@ export const getHRManagerStats = async (trend: string = '30d', user?: any) => {
       prisma.candidate.count().catch(() => 0),
       prisma.jobRole.count().catch(() => 0),
       prisma.announcement.findMany({
-        where: { isActive: true, OR: [{ target: 'ALL' }, { target: 'HR_MANAGER' }] },
+        where: tenantAnnouncementWhere,
         orderBy: { createdAt: 'desc' },
-        take: 5,
-        include: { author: { select: { firstName: true, lastName: true } } }
+        take: 10,
+        include: { author: { select: { firstName: true, lastName: true, companyName: true } } }
       }).catch(() => []),
       getUpcomingBirthdays(tenantFilter),
       getUpcomingAnniversaries(tenantFilter),
@@ -433,11 +443,30 @@ export const getEmployeeStats = async (userId: string) => {
     ];
   }
 
+  const { companyId, hrAdminId, companyName } = await resolveUserCompanyContext({ id: userId, role: 'EMPLOYEES' });
+  const companyConditions: any[] = [];
+  if (companyId) companyConditions.push({ companyId });
+  if (hrAdminId) companyConditions.push({ authorId: hrAdminId });
+  if (companyName && companyName.trim()) {
+    companyConditions.push({ author: { companyName: { equals: companyName.trim(), mode: 'insensitive' as const } } });
+  }
+  const tenantEmpAnnouncementWhere = companyConditions.length > 0 ? { OR: companyConditions } : { authorId: 'NO_USER' };
+  const now = new Date();
+
   const announcements = await prisma.announcement.findMany({
-    where: { isActive: true, OR: [{ target: 'ALL' }, { target: 'EMPLOYEE' }] },
+    where: {
+      AND: [
+        tenantEmpAnnouncementWhere,
+        { isActive: true },
+        { target: { in: ['ALL', 'ALL_STAFF', 'EMPLOYEE', 'EMPLOYEES', 'STAFF'] } },
+        {
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }]
+        }
+      ]
+    },
     orderBy: { createdAt: 'desc' },
-    take: 5,
-    include: { author: { select: { firstName: true, lastName: true } } }
+    take: 10,
+    include: { author: { select: { firstName: true, lastName: true, companyName: true } } }
   }).catch(() => []);
 
   const holidays = await prisma.holiday.findMany({
@@ -807,17 +836,29 @@ export const getManagerStats = async (user: any) => {
     { title: "On Leave Today", value: onLeaveToday }
   ];
 
+  const { companyId, hrAdminId, companyName } = await resolveUserCompanyContext(user);
+  const companyConditions: any[] = [];
+  if (companyId) companyConditions.push({ companyId });
+  if (hrAdminId) companyConditions.push({ authorId: hrAdminId });
+  if (companyName && companyName.trim()) {
+    companyConditions.push({ author: { companyName: { equals: companyName.trim(), mode: 'insensitive' as const } } });
+  }
+  const tenantMgrAnnouncementWhere = companyConditions.length > 0 ? { OR: companyConditions } : { authorId: user?.id || 'NO_USER' };
+  const now = new Date();
+
   const announcements = await prisma.announcement.findMany({
     where: {
-      isActive: true,
-      OR: [
-        { target: 'ALL' },
-        { target: 'MANAGER' },
-        ...(user?.id ? [{ authorId: user.id }] : [])
+      AND: [
+        tenantMgrAnnouncementWhere,
+        { isActive: true },
+        { target: { in: ['ALL', 'ALL_STAFF', 'MANAGER', 'MANAGERS', 'EMPLOYEE', 'EMPLOYEES', 'STAFF'] } },
+        {
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }]
+        }
       ]
     },
     orderBy: { createdAt: 'desc' },
-    take: 5,
+    take: 10,
     include: {
       author: {
         select: {

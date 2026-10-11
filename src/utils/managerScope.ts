@@ -18,7 +18,18 @@ export interface ScopeResolution {
  * Resolves the organizational scope for a given authenticated user.
  */
 export async function resolveUserManagerScope(user?: any): Promise<ScopeResolution> {
-  const rawRole = typeof user?.role === 'string' ? user.role : user?.role?.name || '';
+  let rawRole = typeof user?.role === 'string' ? user.role : user?.role?.name || '';
+  if (!rawRole && user?.id) {
+    try {
+      const dbUser = await prisma.user.findUnique({
+        where: { id: user.id },
+        select: { role: { select: { name: true } }, companyId: true, companyName: true }
+      });
+      if (dbUser?.role?.name) rawRole = dbUser.role.name;
+      if (dbUser?.companyId && !user.companyId) user.companyId = dbUser.companyId;
+      if (dbUser?.companyName && !user.companyName) user.companyName = dbUser.companyName;
+    } catch (e) {}
+  }
   const role = normalizeRole(rawRole);
 
   if (role === CANONICAL_ROLES.SUPER_ADMIN) {
@@ -116,10 +127,35 @@ export async function getManagerScopedEmployeeFilter(user?: any): Promise<Prisma
   }
 
   if (scope.isHrAdmin) {
+    const userId = user?.id || (user as any)?.userId || (user as any)?.sub || 'NO_USER';
+    const companyName = user?.companyName;
+
+    const matchConditions: Prisma.EmployeeWhereInput[] = [
+      { createdById: userId },
+      { userId: userId }
+    ];
+
     if (scope.companyId) {
-      return { isDeleted: false, companyId: scope.companyId };
+      matchConditions.push({ companyId: scope.companyId });
     }
-    return { isDeleted: false };
+
+    if (companyName && companyName.trim()) {
+      matchConditions.push({
+        user: { companyName: { equals: companyName.trim(), mode: 'insensitive' } }
+      });
+    }
+
+    return {
+      isDeleted: false,
+      OR: matchConditions,
+      NOT: [
+        { email: { equals: 'superadmin@hrmspro.com', mode: 'insensitive' } },
+        { email: { equals: 'akhlaquerahman18@gmail.com', mode: 'insensitive' } },
+        { user: { role: { name: 'SUPER_ADMIN' } } },
+        { AND: [{ firstName: { equals: 'Super', mode: 'insensitive' } }, { lastName: { equals: 'Admin', mode: 'insensitive' } }] },
+        { employeeId: { in: ['EMP-SUPER-001', 'SUPER-ADMIN'] } }
+      ]
+    };
   }
 
   if (scope.isManager && scope.managerEmployeeId) {

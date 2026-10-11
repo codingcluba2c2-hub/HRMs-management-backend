@@ -70,6 +70,7 @@ model Company {
   jobRoles              JobRole[]
   candidates            Candidate[]
   jobApplications       JobApplication[]
+  announcements         Announcement[]
 }
 
 model User {
@@ -801,16 +802,23 @@ model AuditLog {
 }
 
 model Announcement {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   title     String
   content   String
-  type      String   @default("INFO") // INFO, WARNING, SUCCESS, URGENT
+  type      String    @default("INFO") // INFO, WARNING, SUCCESS, URGENT
   authorId  String
-  author    User     @relation(fields: [authorId], references: [id])
-  target    String   @default("ALL") // ALL, EMPLOYEE, HR_MANAGER
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  author    User      @relation(fields: [authorId], references: [id])
+  companyId String?
+  company   Company?  @relation(fields: [companyId], references: [id])
+  target    String    @default("ALL") // ALL, EMPLOYEE, HR_MANAGER
+  isActive  Boolean   @default(true)
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([companyId])
+  @@index([authorId])
+  @@index([isActive])
 }
 
 model Subscription {

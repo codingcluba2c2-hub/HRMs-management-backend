@@ -27,9 +27,10 @@ export const createDesignation = async (req: Request, res: Response) => {
     const formattedCode = code ? code.trim().toUpperCase() : `${department.code || 'DES'}-${formattedName.slice(0, 3).toUpperCase()}`;
 
     // Check duplicate name within department or code within tenant
+    const tenantDesigFilter = await getTenantDesignationFilter((req as any).user);
     const existing = await prisma.designation.findFirst({
       where: {
-        createdById: userId,
+        ...tenantDesigFilter,
         OR: [
           { departmentId, name: { equals: formattedName, mode: 'insensitive' } },
           { code: formattedCode }

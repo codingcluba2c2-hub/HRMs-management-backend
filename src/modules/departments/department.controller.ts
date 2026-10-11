@@ -92,7 +92,17 @@ export const getDepartments = async (req: Request, res: Response) => {
 export const createDepartment = async (req: Request, res: Response) => {
   try {
     const { name, code, description, status = true, managerId } = req.body;
-    const userId = (req as any).user?.id;
+    const user = (req as any).user;
+    const userId = user?.id;
+    let companyId = user?.companyId || null;
+
+    if (!companyId && userId) {
+      const dbUser = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { companyId: true }
+      });
+      if (dbUser?.companyId) companyId = dbUser.companyId;
+    }
 
     if (!name || !name.trim()) {
       return res.status(400).json(new ApiResponse(false, 'Department name is required'));
@@ -104,9 +114,10 @@ export const createDepartment = async (req: Request, res: Response) => {
     const formattedName = name.trim();
     const formattedCode = code.trim().toUpperCase();
 
+    const tenantDeptFilter = await getTenantDepartmentFilter(user);
     const existing = await prisma.department.findFirst({
       where: {
-        createdById: userId,
+        ...tenantDeptFilter,
         OR: [{ name: { equals: formattedName, mode: 'insensitive' } }, { code: formattedCode }]
       }
     });
@@ -126,7 +137,8 @@ export const createDepartment = async (req: Request, res: Response) => {
         code: formattedCode,
         description: description?.trim() || null,
         status: status ?? true,
-        createdById: userId || null
+        createdById: userId || null,
+        companyId: companyId
       }
     });
 
@@ -188,13 +200,20 @@ export const updateDepartment = async (req: Request, res: Response) => {
       }
     }
 
+    let companyId = (req as any).user?.companyId || existingDept.companyId || null;
+    if (!companyId && userId) {
+      const u = await prisma.user.findUnique({ where: { id: userId }, select: { companyId: true } });
+      if (u?.companyId) companyId = u.companyId;
+    }
+
     await prisma.department.update({
       where: { id },
       data: {
         name: formattedName,
         code: formattedCode,
         description: description !== undefined ? (description?.trim() || null) : existingDept.description,
-        status: status !== undefined ? status : existingDept.status
+        status: status !== undefined ? status : existingDept.status,
+        ...(companyId && !existingDept.companyId ? { companyId } : {})
       }
     });
 

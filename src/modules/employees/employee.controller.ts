@@ -23,6 +23,10 @@ export const createEmployee = async (req: AuthRequest, res: Response) => {
       return res.status(400).json(new ApiResponse(false, 'Employee with this email or ID already exists'));
     }
 
+    // Fetch HR Admin's company details to auto-fill
+    const hrAdminId = req.user?.id;
+    const hrAdmin = hrAdminId ? await prisma.user.findUnique({ where: { id: hrAdminId } }) : null;
+
     // Hash password if provided
     let userId = null;
     if (data.password) {
@@ -34,10 +38,6 @@ export const createEmployee = async (req: AuthRequest, res: Response) => {
         employeeRole = await prisma.role.create({ data: { name: 'EMPLOYEE', description: 'Regular employee' } });
       }
 
-      // Fetch HR Admin's company details to auto-fill
-      const hrAdminId = req.user?.id;
-      const hrAdmin = hrAdminId ? await prisma.user.findUnique({ where: { id: hrAdminId } }) : null;
-
       const newUser = await prisma.user.create({
         data: {
           firstName: data.firstName,
@@ -46,6 +46,7 @@ export const createEmployee = async (req: AuthRequest, res: Response) => {
           phone: data.phone,
           passwordHash,
           roleId: employeeRole.id,
+          companyId: hrAdmin?.companyId || req.user?.companyId || null,
           companyName: hrAdmin?.companyName || null,
           companyWebsite: hrAdmin?.companyWebsite || null,
           companyAddress: hrAdmin?.companyAddress || null,
@@ -75,6 +76,7 @@ export const createEmployee = async (req: AuthRequest, res: Response) => {
       data: {
         userId,
         createdById: req.user?.id, // Track HR Admin
+        companyId: hrAdmin?.companyId || req.user?.companyId || null,
         employeeId: data.employeeId,
         firstName: data.firstName,
         lastName: data.lastName,
@@ -148,6 +150,7 @@ export const getEmployees = async (req: AuthRequest, res: Response) => {
     if (department && department !== 'ALL') filter.departmentId = department as string;
     if (designation && designation !== 'ALL') filter.designationId = designation as string;
     if (status && status !== 'ALL') filter.status = status as string;
+    if (employmentType && employmentType !== 'ALL') filter.employmentType = employmentType as string;
     if (manager && manager !== 'ALL') filter.managerId = manager as string;
     if (gender && gender !== 'ALL') filter.gender = gender as string;
 
