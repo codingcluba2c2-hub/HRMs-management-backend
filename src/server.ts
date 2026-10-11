@@ -28,6 +28,7 @@ import companyRoutes from './modules/company/company.route';
 import announcementRoutes from './modules/announcements/announcement.route';
 import googleSheetsRoutes from './modules/googleSheets/googleSheets.route';
 import publicRoutes from './modules/public/public.route';
+import careersRoutes from './modules/careers/careers.route';
 import { errorHandler } from './middlewares/errorMiddleware';
 import cookieParser from 'cookie-parser';
 import swaggerUi from 'swagger-ui-express';
@@ -106,6 +107,7 @@ app.get('/api', (req: Request, res: Response) => {
 
 // Setup specialized routes
 app.use('/api/public', publicRoutes);
+app.use('/api/careers', careersRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/designations', designationRoutes);
 app.use('/api/departments', departmentRoutes);

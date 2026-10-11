@@ -4,6 +4,76 @@ import { decrypt } from '../../utils/encryption';
 import { generatePayslipPdf } from '../../utils/pdfGenerator';
 import { sendPayrollEmail } from '../../utils/mailer';
 
+export const resolveEmployeeCompanyInfo = (employee: any, creatorUser?: any, defaultAdminUser?: any) => {
+  const comp = employee?.company;
+  const user = employee?.user;
+
+  // Generic/admin fallback names that should not override real company branding
+  const isGeneric = (name?: string | null) => !name || name.trim() === '' || name.trim() === 'HRMs Admin' || name.trim() === 'Company';
+
+  // 1. Resolve Company Name
+  let name = '';
+  if (comp?.name && !isGeneric(comp.name)) {
+    name = comp.name.trim();
+  } else if (user?.companyName && !isGeneric(user.companyName)) {
+    name = user.companyName.trim();
+  } else if (creatorUser?.companyName && !isGeneric(creatorUser.companyName)) {
+    name = creatorUser.companyName.trim();
+  } else if (comp?.name && comp.name.trim() !== '') {
+    name = comp.name.trim();
+  } else if (user?.companyName && user.companyName.trim() !== '') {
+    name = user.companyName.trim();
+  } else if (defaultAdminUser?.companyName && !isGeneric(defaultAdminUser.companyName)) {
+    name = defaultAdminUser.companyName.trim();
+  } else {
+    name = 'Enterprise HRMS';
+  }
+
+  // 2. Resolve Company Address
+  const isGenericAddress = (addr?: string | null) => !addr || addr.trim() === '' || (name !== 'HRMs Admin' && addr.trim() === 'Siwan, Bihar');
+
+  let address = '';
+  if (comp?.address && !isGenericAddress(comp.address)) {
+    address = comp.address.trim();
+  } else if (user?.companyAddress && !isGenericAddress(user.companyAddress)) {
+    address = user.companyAddress.trim();
+  } else if (creatorUser?.companyAddress && !isGenericAddress(creatorUser.companyAddress)) {
+    address = creatorUser.companyAddress.trim();
+  } else if (comp?.address) {
+    address = comp.address.trim();
+  } else if (user?.companyAddress) {
+    address = user.companyAddress.trim();
+  } else if (defaultAdminUser?.companyAddress && !isGenericAddress(defaultAdminUser.companyAddress)) {
+    address = defaultAdminUser.companyAddress.trim();
+  } else {
+    address = '';
+  }
+
+  // 3. Resolve Company Phone
+  let phone = comp?.phone || user?.companyPhone || creatorUser?.companyPhone || defaultAdminUser?.companyPhone || '';
+  if (phone === '9631901329' && name !== 'HRMs Admin') {
+    phone = comp?.phone || user?.companyPhone || creatorUser?.companyPhone || '';
+  }
+  phone = phone ? phone.trim() : '';
+
+  // 4. Resolve Company Website
+  let website = comp?.website || user?.companyWebsite || creatorUser?.companyWebsite || defaultAdminUser?.companyWebsite || '';
+  if (website === 'https://hrmsakhlaque.vercel.app/' && name !== 'HRMs Admin') {
+    website = comp?.website || user?.companyWebsite || creatorUser?.companyWebsite || '';
+  }
+  website = website ? website.trim() : '';
+
+  const contact = [website, phone].filter(Boolean).join(' | ');
+
+  return {
+    name,
+    address,
+    phone,
+    website,
+    contact
+  };
+};
+
 export const calculatePayrollPreview = async (employeeId: string, month: number, year: number) => {
   const employee = await prisma.employee.findUnique({
     where: { id: employeeId },
@@ -198,10 +268,11 @@ export const createPayrollRecord = async (arg1: any, arg2?: any) => {
   });
 
   const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-  const companyName = employee.company?.name || employee.user?.companyName || "Enterprise HRMS";
-  const companyAddress = employee.company?.address || employee.user?.companyAddress || "123 Tech Park, Innovation Valley";
-  const companyWebsite = employee.company?.website || employee.user?.companyWebsite || "www.enterprise-hrms.com";
-  const companyPhone = employee.company?.phone || employee.user?.companyPhone || "+1 800 555 0199";
+  const compInfo = resolveEmployeeCompanyInfo(employee);
+  const companyName = compInfo.name;
+  const companyAddress = compInfo.address || "123 Tech Park, Innovation Valley";
+  const companyWebsite = compInfo.website || "www.enterprise-hrms.com";
+  const companyPhone = compInfo.phone || "+1 800 555 0199";
 
   let decryptedAccount = data.accountNumber || employee.accountNumber || "N/A";
   if (decryptedAccount && decryptedAccount !== "N/A") {
@@ -399,50 +470,54 @@ export const getPayrollRecords = async (userId: string, role: string, filters: a
         include: {
           department: true,
           designation: true,
-          user: true
+          user: true,
+          company: true
         }
       }
     }
   });
 
-  // Fetch company info to attach to records
-  let companyName: string | null = null;
-  let companyWebsite: string | null = null;
-  let companyAddress: string | null = null;
-  let companyPhone: string | null = null;
+  // Collect creator user IDs to fetch them in a batch if needed
+  const creatorIds = records
+    .map(r => r.employee?.createdById)
+    .filter((id): id is string => Boolean(id));
+
+  const creatorUsers = creatorIds.length > 0
+    ? await prisma.user.findMany({
+        where: { id: { in: creatorIds } }
+      })
+    : [];
+  const creatorMap = new Map<string, any>(creatorUsers.map(u => [u.id, u]));
 
   const adminUser = await prisma.user.findFirst({
     where: {
       companyName: {
         not: null,
-        notIn: ['', 'Company']
+        notIn: ['', 'Company', 'HRMs Admin']
       }
     }
   });
-  if (adminUser) {
-    companyName = adminUser.companyName || null;
-    companyWebsite = adminUser.companyWebsite || null;
-    companyAddress = adminUser.companyAddress || null;
-    companyPhone = adminUser.companyPhone || null;
-  }
 
-  const compContact = [companyWebsite, companyPhone].filter(Boolean).join(' | ');
+  const enrichedRecords = records.map(r => {
+    const creatorUser = r.employee?.createdById ? creatorMap.get(r.employee.createdById) : null;
+    const compInfo = resolveEmployeeCompanyInfo(r.employee, creatorUser, adminUser);
 
-  const enrichedRecords = records.map(r => ({
-    ...JSON.parse(JSON.stringify(r)),
-    companyName: companyName || '',
-    companyAddress: companyAddress || '',
-    companyContact: compContact,
-    companyWebsite: companyWebsite || '',
-    companyPhone: companyPhone || '',
-    company: {
-      companyName: companyName || '',
-      companyAddress: companyAddress || '',
-      companyWebsite: companyWebsite || '',
-      companyPhone: companyPhone || '',
-      companyContact: compContact
-    }
-  }));
+    return {
+      ...JSON.parse(JSON.stringify(r)),
+      companyName: compInfo.name,
+      companyAddress: compInfo.address,
+      companyContact: compInfo.contact,
+      companyWebsite: compInfo.website,
+      companyPhone: compInfo.phone,
+      company: {
+        companyName: compInfo.name,
+        companyAddress: compInfo.address,
+        companyWebsite: compInfo.website,
+        companyPhone: compInfo.phone,
+        companyContact: compInfo.contact
+      }
+    };
+  });
 
   return enrichedRecords;
 };
@@ -458,7 +533,8 @@ export const getPayslipById = async (userId: string, role: string, payslipId: st
           manager: {
             include: { user: true }
           },
-          user: true
+          user: true,
+          company: true
         }
       }
     }
@@ -480,64 +556,35 @@ export const getPayslipById = async (userId: string, role: string, payslipId: st
     }
   }
 
-  // Fetch company info
-  let companyName: string | null = null;
-  let companyWebsite: string | null = null;
-  let companyAddress: string | null = null;
-  let companyPhone: string | null = null;
-
+  let creatorUser = null;
   if (payroll.employee.createdById) {
-    const hrAdmin = await prisma.user.findUnique({ where: { id: payroll.employee.createdById } });
-    if (hrAdmin?.companyName && hrAdmin.companyName.trim().length > 0 && hrAdmin.companyName !== 'Company') {
-      companyName = hrAdmin.companyName;
-      companyWebsite = hrAdmin.companyWebsite || null;
-      companyAddress = hrAdmin.companyAddress || null;
-      companyPhone = hrAdmin.companyPhone || null;
-    }
+    creatorUser = await prisma.user.findUnique({ where: { id: payroll.employee.createdById } });
   }
 
-  if (!companyName && payroll.employee.userId) {
-    const empUser = await prisma.user.findUnique({ where: { id: payroll.employee.userId } });
-    if (empUser?.companyName && empUser.companyName.trim().length > 0 && empUser.companyName !== 'Company') {
-      companyName = empUser.companyName;
-      companyWebsite = empUser.companyWebsite || null;
-      companyAddress = empUser.companyAddress || null;
-      companyPhone = empUser.companyPhone || null;
-    }
-  }
-
-  if (!companyName) {
-    const adminUser = await prisma.user.findFirst({
-      where: {
-        companyName: {
-          not: null,
-          notIn: ['', 'Company']
-        }
+  const adminUser = await prisma.user.findFirst({
+    where: {
+      companyName: {
+        not: null,
+        notIn: ['', 'Company', 'HRMs Admin']
       }
-    });
-    if (adminUser) {
-      companyName = adminUser.companyName;
-      companyWebsite = adminUser.companyWebsite || null;
-      companyAddress = adminUser.companyAddress || null;
-      companyPhone = adminUser.companyPhone || null;
     }
-  }
+  });
 
-  const compContact = [companyWebsite, companyPhone].filter(Boolean).join(' | ');
+  const compInfo = resolveEmployeeCompanyInfo(payroll.employee, creatorUser, adminUser);
 
   return {
     ...JSON.parse(JSON.stringify(payroll)),
-    companyName: companyName || '',
-    companyAddress: companyAddress || '',
-    companyContact: compContact,
-    companyWebsite: companyWebsite || '',
-    companyPhone: companyPhone || '',
+    companyName: compInfo.name,
+    companyAddress: compInfo.address,
+    companyContact: compInfo.contact,
+    companyWebsite: compInfo.website,
+    companyPhone: compInfo.phone,
     company: {
-      companyName: companyName || '',
-      companyAddress: companyAddress || '',
-      companyWebsite: companyWebsite || '',
-      companyPhone: companyPhone || '',
-      companyContact: compContact
+      companyName: compInfo.name,
+      companyAddress: compInfo.address,
+      companyWebsite: compInfo.website,
+      companyPhone: compInfo.phone,
+      companyContact: compInfo.contact
     }
   };
 };

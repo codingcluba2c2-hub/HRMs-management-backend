@@ -67,6 +67,9 @@ model Company {
   googleSheetsConfig    GoogleSheetsConfig?
   googleSheetsSyncJobs  GoogleSheetsSyncJob[]
   googleSheetsSyncOutbox GoogleSheetsSyncOutbox[]
+  jobRoles              JobRole[]
+  candidates            Candidate[]
+  jobApplications       JobApplication[]
 }
 
 model User {
@@ -131,6 +134,7 @@ model Department {
   employees    Employee[] @relation("EmployeeDepartment")
   weeklyRosters WeeklyRoster[]
   managerScopes ManagerScope[]
+  jobRoles      JobRole[]
 
   @@index([companyId])
 }
@@ -474,34 +478,139 @@ model PayrollQuery {
 }
 
 model JobRole {
-  id          String   @id @default(uuid())
-  title       String
-  description String?
+  id               String   @id @default(uuid())
+  title            String
+  slug             String?  @unique
+  description      String?
+  responsibilities String?
+  qualifications   String?
+  skills           String?
+  minExperience    Int?     @default(0)
+  maxExperience    Int?
+  workLocation     String?  @default("Headquarters / Remote")
+  workMode         String   @default("ONSITE") // ONSITE, HYBRID, REMOTE
+  employmentType   String   @default("FULL_TIME") // FULL_TIME, PART_TIME, CONTRACT, INTERNSHIP
+  minSalary        Float?
+  maxSalary        Float?
+  currency         String   @default("INR")
+  showSalary       Boolean  @default(true)
+  openings         Int      @default(1)
+  benefits         String?
+  deadline         DateTime?
+  status           String   @default("PUBLISHED") // DRAFT, PUBLISHED, PAUSED, CLOSED
+  publishedAt      DateTime?
 
-  createdById String?  // Track creator user ID for tenant isolation
+  departmentId     String?
+  department       Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  companyId        String?
+  company          Company?    @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  createdById      String?  // Track creator user ID for tenant isolation
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
   
-  candidates  Candidate[]
+  candidates       Candidate[]
+  applications     JobApplication[]
+
+  @@index([status])
+  @@index([companyId])
+  @@index([createdById])
+  @@index([createdAt])
 }
 
 model Candidate {
-  id              String   @id @default(uuid())
-  firstName       String
-  lastName        String
-  email           String   @unique
-  jobRoleId       String
-  jobRole         JobRole  @relation(fields: [jobRoleId], references: [id])
-  interviewStatus String   @default("PENDING") // PENDING, DONE
-  status          String   @default("IN_PROGRESS") // SELECTED, NOT_SELECTED, IN_PROGRESS
-  resumeLink      String?
+  id                   String   @id @default(uuid())
+  firstName            String
+  lastName             String
+  email                String   @unique
+  phone                String?
+  currentLocation      String?
+  highestQualification String?
+  college              String?
+  experienceYears      Float?
+  currentCompany       String?
+  currentCtc           String?
+  expectedCtc          String?
+  noticePeriod         String?
+  skills               String?
+  linkedInUrl          String?
+  githubUrl            String?
+  portfolioUrl         String?
+  coverLetter          String?
+  source               String   @default("MANUAL") // CAREER_PORTAL, MANUAL, REFERRAL
   
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  jobRoleId            String
+  jobRole              JobRole  @relation(fields: [jobRoleId], references: [id])
+  interviewStatus      String   @default("PENDING") // PENDING, DONE
+  status               String   @default("IN_PROGRESS") // SELECTED, NOT_SELECTED, IN_PROGRESS
+  resumeLink           String?
+
+  companyId            String?
+  company              Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  createdById          String?
+  
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  applications         JobApplication[]
 
   @@index([createdAt])
   @@index([status])
+  @@index([companyId])
+  @@index([createdById])
+}
+
+model JobApplication {
+  id                String   @id @default(uuid())
+  applicationNumber String?  @unique
+  
+  candidateId       String
+  candidate         Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  
+  jobRoleId         String
+  jobRole           JobRole   @relation(fields: [jobRoleId], references: [id], onDelete: Cascade)
+  
+  companyId         String?
+  company           Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  
+  source            String    @default("CAREER_PORTAL") // CAREER_PORTAL, MANUAL
+  status            String    @default("APPLIED") // APPLIED, UNDER_REVIEW, SHORTLISTED, INTERVIEW_SCHEDULED, INTERVIEW_COMPLETED, OFFER_EXTENDED, HIRED, REJECTED, WITHDRAWN
+  
+  resumeUrl         String?
+  resumeFileName    String?
+  resumeMimeType    String?
+  resumeSize        Int?
+  
+  coverLetter       String?
+  screeningNotes    String?
+  appliedAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  statusHistory     ApplicationStatusHistory[]
+
+  @@unique([candidateId, jobRoleId])
+  @@index([jobRoleId])
+  @@index([status])
+  @@index([appliedAt])
+  @@index([companyId])
+}
+
+model ApplicationStatusHistory {
+  id             String         @id @default(uuid())
+  applicationId  String
+  application    JobApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  
+  previousStatus String?
+  newStatus      String
+  actorId        String?
+  actorName      String?
+  reason         String?
+  createdAt      DateTime       @default(now())
+
+  @@index([applicationId])
+  @@index([createdAt])
 }
 
 model DocumentType {

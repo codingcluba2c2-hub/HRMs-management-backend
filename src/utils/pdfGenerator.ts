@@ -49,6 +49,14 @@ export const generatePayslipPdf = async (data: PayslipData): Promise<Buffer> => 
     basicSalary, bonus, deductions, netSalary
   } = data;
 
+  const displayCompanyName = (companyName && companyName.trim() !== 'HRMs Admin') ? companyName.trim() : 'Enterprise HRMS';
+  const displayAddress = (companyAddress && companyAddress.trim() !== 'Siwan, Bihar') ? companyAddress.trim() : '';
+  const contactParts = [
+    companyWebsite && companyWebsite !== 'https://hrmsakhlaque.vercel.app/' ? companyWebsite.trim() : (companyName === 'HRMs Admin' ? companyWebsite : ''),
+    companyPhone && companyPhone !== '9631901329' ? companyPhone.trim() : (companyName === 'HRMs Admin' ? companyPhone : '')
+  ].filter(Boolean);
+  const displayContact = contactParts.join(' | ');
+
   const htmlContent = `
     <!DOCTYPE html>
     <html lang="en">
@@ -128,8 +136,6 @@ export const generatePayslipPdf = async (data: PayslipData): Promise<Buffer> => 
         }
         th, td {
           padding: 12px;
-          text-align: left;
-          border-bottom: 1px solid #e5e7eb;
         }
         th {
           background-color: #f9fafb;
@@ -176,9 +182,9 @@ export const generatePayslipPdf = async (data: PayslipData): Promise<Buffer> => 
     <body>
       <div class="header">
         <div class="company-info">
-          <h1>${companyName || 'Enterprise HRMS'}</h1>
-          <p>${companyAddress || 'Corporate Office'}</p>
-          <p>${companyWebsite || ''} ${companyPhone ? '| ' + companyPhone : ''}</p>
+          <h1>${displayCompanyName}</h1>
+          ${displayAddress ? `<p>${displayAddress}</p>` : ''}
+          ${displayContact ? `<p>${displayContact}</p>` : ''}
         </div>
         <div class="payslip-title">
           <h2>PAYSLIP</h2>

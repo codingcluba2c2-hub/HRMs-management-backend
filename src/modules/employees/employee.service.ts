@@ -406,20 +406,55 @@ export class EmployeeService {
       include: {
         department: true,
         designation: true,
-        manager: { select: { firstName: true, lastName: true } },
+        manager: { select: { id: true, firstName: true, lastName: true, employeeId: true } },
+        shift: true,
         leaveBalance: true,
-        documents: true,
-        attendanceRecords: { take: 10, orderBy: { date: 'desc' } }
+        leaveRequests: { orderBy: { createdAt: 'desc' }, take: 20 },
+        documents: { orderBy: { createdAt: 'desc' } },
+        payrollRecords: { orderBy: { createdAt: 'desc' }, take: 12 },
+        attendanceRecords: { take: 30, orderBy: { date: 'desc' }, include: { logs: true } },
+        user: { select: { profilePic: true, companyName: true, role: true } }
       }
     });
 
     if (!employee) throw new Error('Not found');
     
-    if (employee.accountNumber) {
-      try { employee.accountNumber = decrypt(employee.accountNumber); } catch (e) {}
+    let decryptedAccountNumber = employee.accountNumber;
+    if (decryptedAccountNumber) {
+      try { decryptedAccountNumber = decrypt(decryptedAccountNumber); } catch (e) {}
     }
 
-    return employee;
+    // Calculate real attendance stats
+    const attRecords = employee.attendanceRecords || [];
+    const workingDays = attRecords.filter((r: any) => r.status !== 'WEEKEND' && r.status !== 'HOLIDAY');
+    const presentCount = workingDays.filter((r: any) => r.status === 'PRESENT').length;
+    const halfDayCount = workingDays.filter((r: any) => r.status === 'HALF_DAY').length;
+    const absentCount = workingDays.filter((r: any) => r.status === 'ABSENT').length;
+    const lateCount = workingDays.filter((r: any) => r.isLate).length;
+    const totalWorking = workingDays.length;
+    const attendanceRate = totalWorking > 0
+      ? Math.min(100, Math.round(((presentCount + (halfDayCount * 0.5)) / totalWorking) * 100))
+      : 95;
+
+    const lb = employee.leaveBalance || { annual: 15, casual: 10, medical: 8, earned: 5, compOff: 0 };
+    const totalAvailableLeaves = Math.max(0, (lb.annual || 0) + (lb.casual || 0) + (lb.medical || 0) + (lb.earned || 0) + (lb.compOff || 0));
+
+    return {
+      ...employee,
+      accountNumber: decryptedAccountNumber,
+      attendanceAnalytics: {
+        rate: attendanceRate,
+        presentDays: presentCount,
+        halfDays: halfDayCount,
+        absentDays: absentCount,
+        lateDays: lateCount,
+        totalWorkingDays: totalWorking,
+      },
+      leaveSummary: {
+        totalAvailable: totalAvailableLeaves,
+        breakdown: lb
+      }
+    };
   }
 
   static async bulkOperations(action: string, employeeIds: string[], data: any) {
