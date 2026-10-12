@@ -222,12 +222,27 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
     });
 
     // Find existing WeeklyRosters for this department & weekStart
-    const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? (departmentId as string) : null;
+    const targetDepartmentId = (departmentId && departmentId !== 'ALL' && departmentId !== 'all') ? (departmentId as string) : null;
+    const rosterWhere: any = {
+      weekStart: weekStart
+    };
+
+    if (targetDepartmentId) {
+      rosterWhere.departmentId = targetDepartmentId;
+    } else if (scope.isManager && scope.departmentIds.length > 0) {
+      rosterWhere.departmentId = { in: scope.departmentIds };
+    } else if (employees.length > 0) {
+      const deptIds = Array.from(new Set(employees.map(e => e.department?.id).filter(Boolean))) as string[];
+      if (deptIds.length > 0) {
+        rosterWhere.OR = [
+          { departmentId: { in: deptIds } },
+          { departmentId: null }
+        ];
+      }
+    }
+
     const rosters = await prisma.weeklyRoster.findMany({
-      where: {
-        departmentId: targetDepartmentId,
-        weekStart: weekStart
-      },
+      where: rosterWhere,
       include: {
         entries: {
           include: {
@@ -238,7 +253,8 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
       orderBy: { updatedAt: 'desc' }
     });
 
-    const roster = rosters.length > 0 ? rosters[0] : null;
+    const isAnyPublished = rosters.some(r => r.status === 'PUBLISHED');
+    const roster = rosters.find(r => r.status === 'PUBLISHED') || (rosters.length > 0 ? rosters[0] : null);
 
     // Map existing entries: employeeId -> dateStr -> entry across all rosters for this week
     const entryMap = new Map<string, Map<string, any>>();
@@ -388,7 +404,7 @@ export const getRoster = async (req: AuthRequest, res: Response) => {
     return res.status(200).json(new ApiResponse(true, 'Roster fetched successfully', {
       roster: roster ? {
         id: roster.id,
-        status: roster.status,
+        status: isAnyPublished ? 'PUBLISHED' : roster.status,
         version: roster.version,
         createdById: roster.createdById,
         publishedById: roster.publishedById,
@@ -451,14 +467,20 @@ export const saveDraft = async (req: AuthRequest, res: Response) => {
     }
 
     const { weekStart, weekEnd } = getWeekRange(weekStartParam);
-    const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? departmentId : null;
+    const targetDepartmentId = (departmentId && departmentId !== 'ALL' && departmentId !== 'all') ? departmentId : null;
 
     // Check if roster is LOCKED
+    const rosterWhere: any = {
+      weekStart
+    };
+    if (targetDepartmentId) {
+      rosterWhere.departmentId = targetDepartmentId;
+    } else if (scope.isManager && scope.departmentIds.length > 0) {
+      rosterWhere.departmentId = { in: scope.departmentIds };
+    }
+
     const existingRoster = await prisma.weeklyRoster.findFirst({
-      where: {
-        departmentId: targetDepartmentId,
-        weekStart
-      },
+      where: rosterWhere,
       orderBy: { updatedAt: 'desc' }
     });
 
@@ -600,14 +622,20 @@ export const publishRoster = async (req: AuthRequest, res: Response) => {
         where: { id: rosterId },
         include: { entries: true, department: true }
       });
-    } else if (departmentId && weekStartParam) {
+    } else if (weekStartParam) {
       const { weekStart } = getWeekRange(weekStartParam);
-      const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? departmentId : null;
+      const targetDepartmentId = (departmentId && departmentId !== 'ALL' && departmentId !== 'all') ? departmentId : null;
+      const rosterWhere: any = {
+        weekStart
+      };
+      if (targetDepartmentId) {
+        rosterWhere.departmentId = targetDepartmentId;
+      } else if (scope.isManager && scope.departmentIds.length > 0) {
+        rosterWhere.departmentId = { in: scope.departmentIds };
+      }
+
       roster = await prisma.weeklyRoster.findFirst({
-        where: {
-          departmentId: targetDepartmentId,
-          weekStart
-        },
+        where: rosterWhere,
         include: { entries: true, department: true },
         orderBy: { updatedAt: 'desc' }
       });
@@ -725,15 +753,19 @@ export const copyWeek = async (req: AuthRequest, res: Response) => {
 
     const sourceRange = getWeekRange(sourceWeekStart);
     const targetRange = getWeekRange(targetWeekStart);
-    const targetDepartmentId = (departmentId && departmentId !== 'ALL') ? departmentId : null;
-    const targetDesignationId = (designationId && designationId !== 'ALL') ? designationId : null;
+    const targetDepartmentId = (departmentId && departmentId !== 'ALL' && departmentId !== 'all') ? departmentId : null;
+    const targetDesignationId = (designationId && designationId !== 'ALL' && designationId !== 'all') ? designationId : null;
+
+    const sourceWhere: any = {
+      weekStart: sourceRange.weekStart
+    };
+    if (targetDepartmentId) {
+      sourceWhere.departmentId = targetDepartmentId;
+    }
 
     // Find source roster
     const sourceRoster = await prisma.weeklyRoster.findFirst({
-      where: {
-        departmentId: targetDepartmentId,
-        weekStart: sourceRange.weekStart
-      },
+      where: sourceWhere,
       include: { entries: true },
       orderBy: { updatedAt: 'desc' }
     });
@@ -742,12 +774,16 @@ export const copyWeek = async (req: AuthRequest, res: Response) => {
       return res.status(404).json(new ApiResponse(false, 'No source roster found for the specified previous week.'));
     }
 
+    const targetWhere: any = {
+      weekStart: targetRange.weekStart
+    };
+    if (targetDepartmentId) {
+      targetWhere.departmentId = targetDepartmentId;
+    }
+
     // Upsert target WeeklyRoster
     let targetRoster = await prisma.weeklyRoster.findFirst({
-      where: {
-        departmentId: targetDepartmentId,
-        weekStart: targetRange.weekStart
-      },
+      where: targetWhere,
       orderBy: { updatedAt: 'desc' }
     });
 
