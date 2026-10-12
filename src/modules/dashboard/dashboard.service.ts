@@ -358,7 +358,7 @@ export const getHRManagerStats = async (trend: string = '30d', user?: any) => {
 };
 
 export const getEmployeeStats = async (userId: string) => {
-  return await withCache(`dashboard:employee:${userId}`, 120, async () => {
+  return await withCache(`dashboard:employee:${userId}`, 20, async () => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -369,7 +369,13 @@ export const getEmployeeStats = async (userId: string) => {
       attendanceRecords: {
         where: { date: { gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) } },
         orderBy: { date: 'desc' },
-        take: 90
+        take: 90,
+        include: {
+          shift: true,
+          logs: {
+            orderBy: { punchIn: 'asc' }
+          }
+        }
       },
       payrollRecords: {
         orderBy: { createdAt: 'desc' },
