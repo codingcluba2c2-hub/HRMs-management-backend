@@ -2,6 +2,7 @@ import { prisma } from '../../lib/prisma';
 import { withCache } from '../../lib/redis';
 import { getTenantEmployeeFilter, getTenantDepartmentFilter } from '../../utils/tenantFilter';
 import { resolveUserCompanyContext } from '../announcements/announcement.controller';
+import { getUtcMidnight, resolveEmployeeActiveShiftContext } from '../../utils/shiftWindow';
 
 export const getSuperAdminStats = async () => {
   return await withCache('dashboard:superadmin', 60, async () => {
@@ -359,8 +360,7 @@ export const getHRManagerStats = async (trend: string = '30d', user?: any) => {
 
 export const getEmployeeStats = async (userId: string) => {
   return await withCache(`dashboard:employee:${userId}`, 20, async () => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = getUtcMidnight(new Date());
 
   const employee = await prisma.employee.findUnique({ 
     where: { userId },
@@ -412,15 +412,43 @@ export const getEmployeeStats = async (userId: string) => {
   }
   const empId = employee.id;
 
-  const todayRecord = await prisma.attendanceRecord.findUnique({
-    where: { employeeId_date: { employeeId: empId, date: today } },
+  const windowContext = await resolveEmployeeActiveShiftContext(empId, new Date()).catch(() => null);
+  const shiftDateToLook = windowContext?.shiftDate || today;
+
+  let todayRecord = await prisma.attendanceRecord.findUnique({
+    where: { employeeId_date: { employeeId: empId, date: shiftDateToLook } },
     include: { logs: true }
   });
+  if (!todayRecord && shiftDateToLook.getTime() !== today.getTime()) {
+    todayRecord = await prisma.attendanceRecord.findUnique({
+      where: { employeeId_date: { employeeId: empId, date: today } },
+      include: { logs: true }
+    });
+  }
 
   const isPunchedIn = todayRecord?.logs.some(l => !l.punchOut);
-  const todaysAttendanceStatus = isPunchedIn ? "PUNCHED IN" : (todayRecord?.status || "NOT PUNCHED IN");
+  let todaysAttendanceStatus = "NOT PUNCHED IN";
+  if (isPunchedIn) {
+    todaysAttendanceStatus = "PUNCHED IN";
+  } else if (todayRecord?.status === 'PRESENT' && todayRecord.effectiveHours >= 8.0) {
+    todaysAttendanceStatus = "PRESENT";
+  } else if (todayRecord?.status === 'HALF_DAY' || (todayRecord && todayRecord.effectiveHours >= 4.0 && todayRecord.effectiveHours < 8.0)) {
+    todaysAttendanceStatus = "HALF DAY";
+  } else if (todayRecord?.status === 'INSUFFICIENT_HOURS') {
+    todaysAttendanceStatus = "INSUFFICIENT HOURS";
+  } else if (windowContext?.isAfterWindow && (!todayRecord || todayRecord.logs.length === 0)) {
+    todaysAttendanceStatus = "ABSENT";
+  } else if (todayRecord?.status) {
+    todaysAttendanceStatus = todayRecord.status;
+  }
 
-  const presentDays = await prisma.attendanceRecord.count({ where: { employeeId: empId, status: 'PRESENT' } });
+  const presentDays = await prisma.attendanceRecord.count({ 
+    where: { 
+      employeeId: empId, 
+      status: 'PRESENT',
+      effectiveHours: { gte: 8.0 }
+    } 
+  });
   const totalDays = 30; // Assuming monthly calc
   const attendancePercentage = totalDays > 0 ? Math.round((presentDays / totalDays) * 100) : 0;
   

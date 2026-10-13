@@ -12,12 +12,11 @@ import {
   formatMinutesToHoursMinutes
 } from '../../config/attendancePolicy';
 
-// Utility to get today's normalized date
-const getTodayDate = () => {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
-};
+import { 
+  resolveEmployeeActiveShiftContext, 
+  getUtcMidnight, 
+  formatTime12h 
+} from '../../utils/shiftWindow';
 
 import { getOrCreateEmployeeForUser } from '../../utils/employeeUtils';
 
@@ -27,6 +26,9 @@ export const getStatus = async (req: Request, res: Response) => {
     const employee = await getOrCreateEmployeeForUser((req as any).user);
     if (!employee) return res.status(404).json(new ApiResponse(false, "Employee profile not found"));
 
+    const now = new Date();
+    const windowContext = await resolveEmployeeActiveShiftContext(employee.id, now);
+
     // First search for ANY active open attendance log across all records for this employee
     const openLogAcrossRecords = await prisma.attendanceLog.findFirst({
       where: {
@@ -35,7 +37,7 @@ export const getStatus = async (req: Request, res: Response) => {
       },
       include: {
         attendance: {
-          include: { logs: true, breaks: true }
+          include: { logs: true, breaks: true, shift: true }
         }
       },
       orderBy: { punchIn: 'desc' }
@@ -45,26 +47,44 @@ export const getStatus = async (req: Request, res: Response) => {
     if (openLogAcrossRecords) {
       record = openLogAcrossRecords.attendance;
     } else {
-      const today = getTodayDate();
       record = await prisma.attendanceRecord.findUnique({
-        where: { employeeId_date: { employeeId: employee.id, date: today } },
-        include: { logs: true, breaks: true }
+        where: { employeeId_date: { employeeId: employee.id, date: windowContext.shiftDate } },
+        include: { logs: true, breaks: true, shift: true }
       });
     }
 
+    const windowStatusPayload = {
+      isOpen: windowContext.isWithinWindow,
+      canPunchIn: windowContext.canPunchIn,
+      canResume: windowContext.canResume,
+      isBeforeWindow: windowContext.isBeforeWindow,
+      isAfterWindow: windowContext.isAfterWindow,
+      windowStart: windowContext.punchInWindowStart.toISOString(),
+      windowEnd: windowContext.punchInWindowEnd.toISOString(),
+      formattedWindowStart: windowContext.formattedWindowStart,
+      formattedWindowEnd: windowContext.formattedWindowEnd,
+      shiftName: windowContext.shift.name,
+      shiftTiming: `${windowContext.shift.startTime} - ${windowContext.shift.endTime}`,
+      isOvernight: windowContext.shift.isOvernight,
+      message: windowContext.windowMessage
+    };
+
     if (!record || !record.logs || record.logs.length === 0) {
+      const fallbackStatus = windowContext.isAfterWindow ? "ABSENT" : "INSUFFICIENT_HOURS";
+      const fallbackCurrentState = windowContext.isAfterWindow ? "WINDOW_CLOSED" : "NOT_PUNCHED_IN";
+
       return res.status(200).json(new ApiResponse(true, "Success", {
-        currentState: "NOT_PUNCHED_IN",
-        attendanceStatus: "INSUFFICIENT_HOURS",
+        currentState: fallbackCurrentState,
+        attendanceStatus: fallbackStatus,
         dailyWorkingMinutes: 0,
         dailyWorkingHours: "0m",
         canResume: false,
+        canPunchIn: windowContext.canPunchIn,
+        windowStatus: windowStatusPayload,
         requiredWorkingMinutes: REQUIRED_WORKING_MINUTES,
         halfDayThresholdMinutes: HALF_DAY_THRESHOLD_MINUTES
       }));
     }
-
-    const shift = record.shift;
 
     // Determine current live state
     const openLog = record.logs.find((l: any) => !l.punchOut);
@@ -110,7 +130,6 @@ export const getStatus = async (req: Request, res: Response) => {
     const openBreakType = openBreak ? (openBreak.type || openBreak.TYPE || openBreak.Type || "TEA") : "TEA";
     const openBreakStart = openBreak ? (openBreak.breakStart || openBreak.breakstart || openBreak.BREAKSTART) : null;
 
-    const now = new Date();
     let totalBreakSeconds = 0;
     (record.breaks as any[]).forEach(b => {
       if (b.breakEnd) {
@@ -158,7 +177,7 @@ export const getStatus = async (req: Request, res: Response) => {
       currentState = "PUNCHED_IN";
       canResume = false;
     } else if (record.logs.length > 0) {
-      canResume = totalEffectiveMinutes < REQUIRED_WORKING_MINUTES;
+      canResume = windowContext.canResume && totalEffectiveMinutes < REQUIRED_WORKING_MINUTES;
       currentState = canResume ? "PUNCHED_OUT" : "COMPLETED";
     }
 
@@ -169,6 +188,11 @@ export const getStatus = async (req: Request, res: Response) => {
       dailyWorkingMinutes: totalEffectiveMinutes,
       dailyWorkingHours: formatMinutesToHoursMinutes(totalEffectiveMinutes),
       canResume,
+      canPunchIn: windowContext.canPunchIn,
+      windowStatus: {
+        ...windowStatusPayload,
+        canResume
+      },
       requiredWorkingMinutes: REQUIRED_WORKING_MINUTES,
       halfDayThresholdMinutes: HALF_DAY_THRESHOLD_MINUTES,
       activeBreak: openBreak ? {
@@ -204,51 +228,68 @@ export const punchIn = async (req: Request, res: Response) => {
       return res.status(409).json(new ApiResponse(false, "An active attendance session already exists. Please punch out from the active session before starting another session."));
     }
 
-    const today = getTodayDate();
-    let record = await prisma.attendanceRecord.findUnique({
-      where: { employeeId_date: { employeeId: employee.id, date: today } },
+    const now = new Date();
+    const windowContext = await resolveEmployeeActiveShiftContext(employee.id, now);
+
+    // Look for existing attendance record for this shift date
+    let record: any = await prisma.attendanceRecord.findUnique({
+      where: { employeeId_date: { employeeId: employee.id, date: windowContext.shiftDate } },
       include: { logs: true, breaks: true }
     });
 
-    if (!record) {
-      // Find shift
-      const now = new Date();
-      const currentMinutes = now.getHours() * 60 + now.getMinutes();
-      
-      const activeShifts = await prisma.shift.findMany({ where: { status: true } });
-      let matchedShift = null;
-      let minDiff = Infinity;
+    const hasExistingLogs = record && record.logs && record.logs.length > 0;
 
-      for (const shift of activeShifts) {
-        const [startHour, startMin] = shift.startTime.split(':').map(Number);
-        const shiftStartMinutes = startHour * 60 + startMin;
-        
-        const diff = Math.abs(currentMinutes - shiftStartMinutes);
-        if (diff < minDiff && diff <= 180) {
-          minDiff = diff;
-          matchedShift = shift;
-        }
+    if (hasExistingLogs) {
+      // SESSION RESUME FLOW
+      if (!windowContext.canResume) {
+        return res.status(400).json(new ApiResponse(false, `Your scheduled shift (${windowContext.shift.name}) period has ended. You cannot resume this shift session.`));
+      }
+    } else {
+      // INITIAL PUNCH-IN FLOW: Validate shift window
+      if (windowContext.isBeforeWindow) {
+        return res.status(400).json(new ApiResponse(false, `Punch-in opens at ${windowContext.formattedWindowStart} (1 hour before ${windowContext.shift.name} at ${windowContext.formattedShiftStart}). Early punch-in is not permitted.`));
       }
 
-      const shiftIdToUse = matchedShift ? matchedShift.id : employee.shiftId;
+      if (windowContext.isAfterWindow) {
+        // Enforce absent status on DB if record exists
+        if (record) {
+          await prisma.attendanceRecord.update({
+            where: { id: record.id },
+            data: { status: "ABSENT" }
+          }).catch(() => {});
+        }
+        return res.status(400).json(new ApiResponse(false, `Punch-in window closed at ${windowContext.formattedWindowEnd} (1 hour after shift start). You cannot punch in and have been marked absent.`));
+      }
 
-      record = await prisma.attendanceRecord.create({
-        data: {
-          employeeId: employee.id,
-          date: today,
-          status: "INSUFFICIENT_HOURS",
-          shiftId: shiftIdToUse
-        },
-        include: { logs: true, breaks: true }
-      });
+      // Create record if not yet created
+      if (!record) {
+        record = await prisma.attendanceRecord.create({
+          data: {
+            employeeId: employee.id,
+            date: windowContext.shiftDate,
+            status: "INSUFFICIENT_HOURS",
+            shiftId: windowContext.shift.id,
+            isLate: windowContext.isLatePunch
+          },
+          include: { logs: true, breaks: true }
+        });
+      } else {
+        await prisma.attendanceRecord.update({
+          where: { id: record.id },
+          data: {
+            shiftId: windowContext.shift.id,
+            isLate: windowContext.isLatePunch
+          }
+        }).catch(() => {});
+      }
     }
 
-    const isResume = record.logs && record.logs.length > 0;
+    const isResume = hasExistingLogs;
 
     const newLog = await prisma.attendanceLog.create({
       data: {
         attendanceId: record.id,
-        punchIn: new Date(),
+        punchIn: now,
         ipAddress,
         gpsLocation,
         deviceName,
@@ -261,7 +302,6 @@ export const punchIn = async (req: Request, res: Response) => {
     const allLogs = await prisma.attendanceLog.findMany({ where: { attendanceId: record.id } });
     const allBreaks = await prisma.breakSession.findMany({ where: { attendanceId: record.id } });
 
-    const now = new Date();
     let grossMs = 0;
     allLogs.forEach(l => {
       const end = l.punchOut ? new Date(l.punchOut) : now;
@@ -298,7 +338,7 @@ export const punchIn = async (req: Request, res: Response) => {
       console.warn("[GoogleSheets] Failed to enqueue PunchIn sync event:", e);
     }
 
-    return res.status(201).json(new ApiResponse(true, isResume ? "Resumed Work Successfully" : "Punched In Successfully", {
+    return res.status(201).json(new ApiResponse(true, isResume ? "Resumed Work Session Successfully" : "Punched In Successfully", {
       ...newLog,
       currentState: "PUNCHED_IN",
       attendanceStatus: calculatedStatus,
@@ -421,16 +461,22 @@ export const startBreak = async (req: Request, res: Response) => {
     const employee = await getOrCreateEmployeeForUser(userId);
     if (!employee) return res.status(404).json(new ApiResponse(false, "Employee profile not found"));
 
-    const today = getTodayDate();
-    const record = await prisma.attendanceRecord.findUnique({
-      where: { employeeId_date: { employeeId: employee.id, date: today } },
-      include: { logs: true, breaks: true }
+    // Find active open log across ALL records for this employee
+    const openLog = await prisma.attendanceLog.findFirst({
+      where: {
+        attendance: { employeeId: employee.id },
+        punchOut: null
+      },
+      include: {
+        attendance: {
+          include: { logs: true, breaks: true }
+        }
+      },
+      orderBy: { punchIn: 'desc' }
     });
 
-    if (!record) return res.status(400).json(new ApiResponse(false, "No active attendance record found"));
-
-    const openLog = record.logs.find(l => !l.punchOut);
     if (!openLog) return res.status(400).json(new ApiResponse(false, "You must be punched in to take a break"));
+    const record = openLog.attendance;
 
     if (!type || typeof type !== 'string') {
       return res.status(400).json(new ApiResponse(false, "Invalid break type. Break type payload is required."));
@@ -522,16 +568,22 @@ export const endBreak = async (req: Request, res: Response) => {
     const employee = await getOrCreateEmployeeForUser(userId);
     if (!employee) return res.status(404).json(new ApiResponse(false, "Employee profile not found"));
 
-    const today = getTodayDate();
-    const record = await prisma.attendanceRecord.findUnique({
-      where: { employeeId_date: { employeeId: employee.id, date: today } },
-      include: { breaks: true, logs: true }
+    // Find open break session across ALL records for this employee
+    const openBreak = await prisma.breakSession.findFirst({
+      where: {
+        attendance: { employeeId: employee.id },
+        breakEnd: null
+      },
+      include: {
+        attendance: {
+          include: { logs: true, breaks: true }
+        }
+      },
+      orderBy: { breakStart: 'desc' }
     });
 
-    if (!record) return res.status(400).json(new ApiResponse(false, "No active attendance record found"));
-
-    const openBreak = record.breaks.find(b => !b.breakEnd);
     if (!openBreak) return res.status(400).json(new ApiResponse(false, "No open break session found"));
+    const record = openBreak.attendance;
 
     const end = new Date();
     const durationSeconds = Math.max(1, Math.floor((end.getTime() - openBreak.breakStart.getTime()) / 1000));
@@ -1448,8 +1500,7 @@ export const hrPunchIn = async (req: Request, res: Response) => {
       return res.status(409).json(new ApiResponse(false, "Employee already has an active open session"));
     }
 
-    const targetDate = date ? new Date(date) : getTodayDate();
-    targetDate.setHours(0, 0, 0, 0);
+    const targetDate = date ? getUtcMidnight(new Date(date)) : getUtcMidnight(new Date());
 
     let record = await prisma.attendanceRecord.findUnique({
       where: { employeeId_date: { employeeId, date: targetDate } }
@@ -1607,7 +1658,7 @@ export const hrResumeWork = async (req: Request, res: Response) => {
     if (attendanceId) {
       record = await prisma.attendanceRecord.findFirst({ where: { id: attendanceId, employee: scopedFilter } });
     } else if (employeeId) {
-      const today = getTodayDate();
+      const today = getUtcMidnight(new Date());
       record = await prisma.attendanceRecord.findFirst({ where: { employeeId, date: today, employee: scopedFilter } });
     }
 
