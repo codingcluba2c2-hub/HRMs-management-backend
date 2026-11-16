@@ -1,36 +1,46 @@
 import { z } from 'zod';
 import { emailValidation, nameValidation, phoneValidation, passwordValidation, addressValidation, pincodeValidation } from '../../validations/common.schema';
 
+// Helper to preprocess empty strings or whitespace to null
+const emptyToNull = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((val) => {
+    if (typeof val === 'string' && val.trim() === '') return null;
+    return val;
+  }, schema.optional().nullable());
+
 export const updatePersonalSchema = z.object({
   firstName: nameValidation,
-  lastName: nameValidation,
+  lastName: z.preprocess(
+    (val) => (typeof val === 'string' ? val.trim() : val),
+    z.string().min(1, 'Last name must be at least 1 character').max(50).regex(/^[a-zA-Z\s\'-.]+$/, 'Invalid last name format').optional().nullable().or(z.literal(''))
+  ),
   gender: z.string().optional(),
-  dob: z.string().optional().nullable(),
+  dob: z.preprocess((val) => (typeof val === 'string' && val.trim() === '' ? null : val), z.string().optional().nullable()),
   bloodGroup: z.string().optional().nullable(),
   maritalStatus: z.string().optional().nullable(),
   nationality: z.string().optional().nullable(),
 });
 
 export const updateContactSchema = z.object({
-  phone: phoneValidation.optional().nullable(),
-  alternatePhone: phoneValidation.optional().nullable(),
-  emergencyEmail: emailValidation.optional().nullable(),
-  address: addressValidation.optional().nullable(),
-  city: z.string().optional().nullable(),
-  state: z.string().optional().nullable(),
-  country: z.string().optional().nullable(),
-  postalCode: pincodeValidation.optional().nullable(),
-  emergencyContactName: nameValidation.optional().nullable(),
-  emergencyContactRelation: z.string().optional().nullable(),
-  emergencyContactPhone: phoneValidation.optional().nullable(),
-  emergencyContactAddress: addressValidation.optional().nullable(),
+  phone: emptyToNull(phoneValidation),
+  alternatePhone: emptyToNull(phoneValidation),
+  emergencyEmail: emptyToNull(emailValidation),
+  address: emptyToNull(addressValidation),
+  city: z.preprocess((val) => (typeof val === 'string' && val.trim() === '' ? null : val), z.string().optional().nullable()),
+  state: z.preprocess((val) => (typeof val === 'string' && val.trim() === '' ? null : val), z.string().optional().nullable()),
+  country: z.preprocess((val) => (typeof val === 'string' && val.trim() === '' ? null : val), z.string().optional().nullable()),
+  postalCode: emptyToNull(pincodeValidation),
+  emergencyContactName: emptyToNull(nameValidation),
+  emergencyContactRelation: z.preprocess((val) => (typeof val === 'string' && val.trim() === '' ? null : val), z.string().optional().nullable()),
+  emergencyContactPhone: emptyToNull(phoneValidation),
+  emergencyContactAddress: emptyToNull(addressValidation),
 });
 
 export const updateBankSchema = z.object({
-  bankName: z.string().optional().nullable(),
-  accountNumber: z.string().regex(/^\d{9,18}$/, 'Invalid Account Number').optional().nullable(),
-  ifsc: z.string().regex(/^[A-Z]{4}0[A-Z0-9]{6}$/, 'Invalid IFSC Code').optional().nullable(),
-  upiId: z.string().regex(/^[\w.-]+@[\w.-]+$/, 'Invalid UPI ID').optional().nullable(),
+  bankName: z.preprocess((val) => (typeof val === 'string' && val.trim() === '' ? null : val), z.string().optional().nullable()),
+  accountNumber: emptyToNull(z.string().regex(/^\d{9,18}$/, 'Invalid Account Number')),
+  ifsc: emptyToNull(z.string().regex(/^[A-Z]{4}0[A-Z0-9]{6}$/, 'Invalid IFSC Code')),
+  upiId: emptyToNull(z.string().regex(/^[\w.-]+@[\w.-]+$/, 'Invalid UPI ID')),
 });
 
 export const updateSkillsSchema = z.object({

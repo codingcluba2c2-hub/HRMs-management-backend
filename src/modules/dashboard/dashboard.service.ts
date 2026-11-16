@@ -179,8 +179,19 @@ export const getSuperAdminStats = async () => {
 export const getHRManagerStats = async (trend: string = '30d', user?: any) => {
   const userId = user?.id || 'default';
   return await withCache(`dashboard:hrmanager:${userId}:${trend}`, 60, async () => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const todayUtc = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0));
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(now);
+    endOfDay.setHours(23, 59, 59, 999);
+    const today = startOfDay;
+    const todayDateQuery = {
+      OR: [
+        { date: todayUtc },
+        { date: { gte: startOfDay, lte: endOfDay } }
+      ]
+    };
 
     const tenantFilter = getTenantEmployeeFilter(user);
     const tenantDeptFilter = await getTenantDepartmentFilter(user);
@@ -213,7 +224,7 @@ export const getHRManagerStats = async (trend: string = '30d', user?: any) => {
       tenantEmployees
     ] = await Promise.all([
       prisma.employee.count({ where: tenantFilter }),
-      prisma.attendanceRecord.count({ where: { date: today, status: 'PRESENT', employee: tenantFilter } }),
+      prisma.attendanceRecord.count({ where: { ...todayDateQuery, status: { in: ['PRESENT', 'YET_TO_CHECK_OUT', 'HALF_DAY'] }, employee: tenantFilter } }),
       prisma.leaveRequest.count({ where: { status: 'APPROVED', startDate: { lte: new Date() }, endDate: { gte: today }, employee: tenantFilter } }),
       prisma.leaveRequest.count({ where: { status: 'PENDING', employee: tenantFilter } }),
       prisma.attendanceCorrection.count({ where: { status: 'PENDING', employee: tenantFilter } }).catch(() => 0),
@@ -288,7 +299,7 @@ export const getHRManagerStats = async (trend: string = '30d', user?: any) => {
     const todayAttendanceRecords = tenantEmpIds.length > 0 ? await prisma.attendanceRecord.findMany({
       where: {
         employeeId: { in: tenantEmpIds },
-        date: today
+        ...todayDateQuery
       },
       select: { employeeId: true, status: true }
     }) : [];
@@ -303,7 +314,8 @@ export const getHRManagerStats = async (trend: string = '30d', user?: any) => {
       select: { employeeId: true }
     }) : [];
 
-    const presentEmpSet = new Set(todayAttendanceRecords.filter(r => r.status === 'PRESENT').map(r => r.employeeId));
+    const presentStatuses = new Set(['PRESENT', 'YET_TO_CHECK_OUT', 'HALF_DAY']);
+    const presentEmpSet = new Set(todayAttendanceRecords.filter(r => presentStatuses.has(r.status)).map(r => r.employeeId));
     const leaveEmpSet = new Set(todayLeaveRequests.map(r => r.employeeId));
 
     const deptEmpMap = new Map<string, string[]>();

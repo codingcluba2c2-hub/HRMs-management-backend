@@ -29,6 +29,7 @@ import announcementRoutes from './modules/announcements/announcement.route';
 import googleSheetsRoutes from './modules/googleSheets/googleSheets.route';
 import publicRoutes from './modules/public/public.route';
 import careersRoutes from './modules/careers/careers.route';
+import workforceRoutes from './modules/workforce/workforce.route';
 import { errorHandler } from './middlewares/errorMiddleware';
 import cookieParser from 'cookie-parser';
 import swaggerUi from 'swagger-ui-express';
@@ -127,6 +128,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/company', companyRoutes);
 app.use('/api/announcements', announcementRoutes); // Active Announcement Module
 app.use('/api/google-sheets', googleSheetsRoutes);
+app.use('/api/workforce', workforceRoutes);
 
 // Swagger Documentation
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {

@@ -230,17 +230,27 @@ export const updatePersonal = async (req: AuthRequest, res: Response) => {
       include: { employee: true }
     });
 
-    if (user.employee) {
+    let employee = user.employee;
+    if (!employee) {
+      employee = await prisma.employee.findFirst({
+        where: { OR: [{ userId: user.id }, { email: { equals: userEmail, mode: 'insensitive' } }] }
+      });
+      if (employee && !employee.userId) {
+        await prisma.employee.update({ where: { id: employee.id }, data: { userId: user.id } });
+      }
+    }
+
+    if (employee) {
       await prisma.employee.update({
-        where: { id: user.employee.id },
+        where: { id: employee.id },
         data: {
           firstName: data.firstName,
           lastName: data.lastName,
-          gender: data.gender,
+          gender: data.gender || null,
           dob: data.dob ? new Date(data.dob) : null,
-          bloodGroup: data.bloodGroup,
-          maritalStatus: data.maritalStatus,
-          nationality: data.nationality,
+          bloodGroup: data.bloodGroup || null,
+          maritalStatus: data.maritalStatus || null,
+          nationality: data.nationality || null,
         }
       });
     }
@@ -258,7 +268,17 @@ export const updateContact = async (req: AuthRequest, res: Response) => {
 
     const data = req.body;
     const user = await prisma.user.findUnique({ where: { email: userEmail }, include: { employee: true } });
-    if (!user?.employee) return res.status(404).json(new ApiResponse(false, "Employee not found"));
+    if (!user) return res.status(404).json(new ApiResponse(false, "User not found"));
+
+    let employee = user.employee;
+    if (!employee) {
+      employee = await prisma.employee.findFirst({
+        where: { OR: [{ userId: user.id }, { email: { equals: userEmail, mode: 'insensitive' } }] }
+      });
+      if (employee && !employee.userId) {
+        await prisma.employee.update({ where: { id: employee.id }, data: { userId: user.id } });
+      }
+    }
 
     if (data.phone) {
       await prisma.user.update({
@@ -267,23 +287,25 @@ export const updateContact = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    await prisma.employee.update({
-      where: { id: user.employee.id },
-      data: {
-        phone: data.phone,
-        alternatePhone: data.alternatePhone,
-        emergencyEmail: data.emergencyEmail,
-        address: data.address,
-        city: data.city,
-        state: data.state,
-        country: data.country,
-        postalCode: data.postalCode,
-        emergencyContactName: data.emergencyContactName,
-        emergencyContactRelation: data.emergencyContactRelation,
-        emergencyContactPhone: data.emergencyContactPhone,
-        emergencyContactAddress: data.emergencyContactAddress,
-      }
-    });
+    if (employee) {
+      await prisma.employee.update({
+        where: { id: employee.id },
+        data: {
+          phone: data.phone || null,
+          alternatePhone: data.alternatePhone || null,
+          emergencyEmail: data.emergencyEmail || null,
+          address: data.address || null,
+          city: data.city || null,
+          state: data.state || null,
+          country: data.country || null,
+          postalCode: data.postalCode || null,
+          emergencyContactName: data.emergencyContactName || null,
+          emergencyContactRelation: data.emergencyContactRelation || null,
+          emergencyContactPhone: data.emergencyContactPhone || null,
+          emergencyContactAddress: data.emergencyContactAddress || null,
+        }
+      });
+    }
 
     return res.status(200).json(new ApiResponse(true, "Contact info updated successfully"));
   } catch (error: any) {

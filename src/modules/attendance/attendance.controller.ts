@@ -19,6 +19,8 @@ import {
 } from '../../utils/shiftWindow';
 
 import { getOrCreateEmployeeForUser } from '../../utils/employeeUtils';
+import { isValidCoordinate, evaluateOfficeGeofence } from '../workforce/geofence.service';
+import { emitWorkforceEvent } from '../../lib/socket';
 
 // Get current attendance status for the logged-in user
 export const getStatus = async (req: Request, res: Response) => {
@@ -181,10 +183,18 @@ export const getStatus = async (req: Request, res: Response) => {
       currentState = canResume ? "PUNCHED_OUT" : "COMPLETED";
     }
 
+    let locationLatest: any = null;
+    try {
+      locationLatest = await prisma.employeeLocationLatest.findUnique({
+        where: { employeeId: employee.id }
+      });
+    } catch (e) {}
+
     return res.status(200).json(new ApiResponse(true, "Success", {
       record: JSON.parse(JSON.stringify(record)),
       currentState,
       attendanceStatus: calculatedStatus,
+      locationLatest,
       dailyWorkingMinutes: totalEffectiveMinutes,
       dailyWorkingHours: formatMinutesToHoursMinutes(totalEffectiveMinutes),
       canResume,
@@ -211,7 +221,18 @@ export const getStatus = async (req: Request, res: Response) => {
 
 export const punchIn = async (req: Request, res: Response) => {
   try {
-    const { ipAddress, gpsLocation, deviceName, browser, os } = req.body;
+    const { 
+      ipAddress, 
+      gpsLocation, 
+      deviceName, 
+      browser, 
+      os,
+      latitude,
+      longitude,
+      accuracyMeters,
+      locationUnavailableReason,
+      source
+    } = req.body;
     
     const employee = await getOrCreateEmployeeForUser((req as any).user);
     if (!employee) return res.status(404).json(new ApiResponse(false, "Employee profile not found"));
@@ -291,12 +312,150 @@ export const punchIn = async (req: Request, res: Response) => {
         attendanceId: record.id,
         punchIn: now,
         ipAddress,
-        gpsLocation,
+        gpsLocation: gpsLocation || (latitude && longitude ? `${latitude},${longitude}` : null),
         deviceName,
         browser,
         os
       }
     });
+
+    // Enterprise Attendance GPS Location Capture & Geofencing
+    let geofenceStatus = 'LOCATION_UNAVAILABLE';
+    let distanceMeters: number | null = null;
+    const numLat = latitude !== undefined && latitude !== null ? Number(latitude) : null;
+    const numLon = longitude !== undefined && longitude !== null ? Number(longitude) : null;
+    const numAcc = accuracyMeters !== undefined && accuracyMeters !== null ? Number(accuracyMeters) : 10;
+    const hasValidGps = numLat !== null && numLon !== null && isValidCoordinate(numLat, numLon);
+
+    const offices = await prisma.officeLocation.findMany({
+      where: { companyId: employee.companyId || undefined, isActive: true }
+    });
+    const office = (employee.departmentId ? offices.find(o => o.departmentId === employee.departmentId) : null) || offices[0] || null;
+
+    if (hasValidGps) {
+      if (office) {
+        const evalResult = evaluateOfficeGeofence({
+          employeeLocation: { latitude: numLat!, longitude: numLon! },
+          accuracyMeters: numAcc,
+          locationTimestamp: now,
+          office
+        });
+        geofenceStatus = evalResult.geofenceStatus;
+        distanceMeters = evalResult.distanceMeters;
+
+        if (evalResult.isInside) {
+          await prisma.geofenceEvent.create({
+            data: {
+              companyId: employee.companyId,
+              employeeId: employee.id,
+              attendanceSessionId: record.id,
+              officeLocationId: office.id,
+              eventType: 'ENTERED',
+              latitude: numLat!,
+              longitude: numLon!,
+              accuracyMeters: numAcc,
+              occurredAt: now
+            }
+          }).catch(() => {});
+        }
+      }
+
+      await prisma.attendanceLocation.create({
+        data: {
+          companyId: employee.companyId,
+          employeeId: employee.id,
+          attendanceSessionId: record.id,
+          eventType: 'PUNCH_IN',
+          latitude: numLat!,
+          longitude: numLon!,
+          accuracyMeters: numAcc,
+          capturedAt: now,
+          source: source || 'BROWSER_GPS'
+        }
+      }).catch(() => {});
+
+      await prisma.employeeLocationLatest.upsert({
+        where: { employeeId: employee.id },
+        create: {
+          companyId: employee.companyId,
+          employeeId: employee.id,
+          punchInLatitude: numLat!,
+          punchInLongitude: numLon!,
+          punchInAccuracyMeters: numAcc,
+          punchInCapturedAt: now,
+          punchInUnavailableReason: null,
+          latitude: numLat!,
+          longitude: numLon!,
+          accuracyMeters: numAcc,
+          lastUpdatedAt: now,
+          geofenceStatus,
+          currentOfficeId: office?.id || null,
+          distanceMeters,
+          attendanceStatus: 'PRESENT'
+        },
+        update: {
+          punchInLatitude: numLat!,
+          punchInLongitude: numLon!,
+          punchInAccuracyMeters: numAcc,
+          punchInCapturedAt: now,
+          punchInUnavailableReason: null,
+          latitude: numLat!,
+          longitude: numLon!,
+          accuracyMeters: numAcc,
+          lastUpdatedAt: now,
+          geofenceStatus,
+          currentOfficeId: office?.id || null,
+          distanceMeters,
+          attendanceStatus: 'PRESENT'
+        }
+      }).catch(() => {});
+    } else {
+      const reason = locationUnavailableReason || 'GPS location not provided';
+      await prisma.attendanceLocation.create({
+        data: {
+          companyId: employee.companyId,
+          employeeId: employee.id,
+          attendanceSessionId: record.id,
+          eventType: 'PUNCH_IN',
+          latitude: 0,
+          longitude: 0,
+          accuracyMeters: 0,
+          capturedAt: now,
+          source: 'MANUAL_FALLBACK',
+          locationUnavailableReason: reason
+        }
+      }).catch(() => {});
+
+      await prisma.employeeLocationLatest.upsert({
+        where: { employeeId: employee.id },
+        create: {
+          companyId: employee.companyId,
+          employeeId: employee.id,
+          punchInUnavailableReason: reason,
+          geofenceStatus: 'LOCATION_UNAVAILABLE',
+          trackingStatus: 'UNAVAILABLE',
+          attendanceStatus: 'PRESENT'
+        },
+        update: {
+          punchInUnavailableReason: reason,
+          geofenceStatus: 'LOCATION_UNAVAILABLE',
+          trackingStatus: 'UNAVAILABLE',
+          attendanceStatus: 'PRESENT'
+        }
+      }).catch(() => {});
+    }
+
+    if (employee.companyId) {
+      emitWorkforceEvent(employee.companyId, 'attendance:punch-in', {
+        employeeId: employee.id,
+        employeeName: `${employee.firstName} ${employee.lastName}`,
+        departmentId: employee.departmentId,
+        punchInTime: now.toISOString(),
+        hasValidGps,
+        geofenceStatus,
+        distanceMeters
+      }, employee.departmentId || undefined);
+    }
 
     // Re-calculate totals
     const allLogs = await prisma.attendanceLog.findMany({ where: { attendanceId: record.id } });
@@ -436,6 +595,67 @@ export const punchOut = async (req: Request, res: Response) => {
       GoogleSheetsService.enqueueOutboxEvent(employee.companyId, 'ATTENDANCE', record.id, 'PUNCH_OUT');
     } catch (e) {
       console.warn("[GoogleSheets] Failed to enqueue PunchOut sync event:", e);
+    }
+
+    // Enterprise Attendance GPS Location Capture on Punch Out
+    const { latitude, longitude, accuracyMeters, locationUnavailableReason } = req.body;
+    const numLat = latitude !== undefined && latitude !== null ? Number(latitude) : null;
+    const numLon = longitude !== undefined && longitude !== null ? Number(longitude) : null;
+    const numAcc = accuracyMeters !== undefined && accuracyMeters !== null ? Number(accuracyMeters) : 10;
+    const hasValidGps = numLat !== null && numLon !== null && isValidCoordinate(numLat, numLon);
+
+    if (hasValidGps) {
+      await prisma.attendanceLocation.create({
+        data: {
+          companyId: employee.companyId,
+          employeeId: employee.id,
+          attendanceSessionId: record.id,
+          eventType: 'PUNCH_OUT',
+          latitude: numLat!,
+          longitude: numLon!,
+          accuracyMeters: numAcc,
+          capturedAt: now,
+          source: 'BROWSER_GPS'
+        }
+      }).catch(() => {});
+
+      await prisma.employeeLocationLatest.updateMany({
+        where: { employeeId: employee.id },
+        data: {
+          punchOutLatitude: numLat!,
+          punchOutLongitude: numLon!,
+          punchOutAccuracyMeters: numAcc,
+          punchOutCapturedAt: now,
+          isLiveTracking: false,
+          trackingStatus: 'INACTIVE',
+          attendanceStatus: calculatedStatus
+        }
+      }).catch(() => {});
+    } else {
+      await prisma.employeeLocationLatest.updateMany({
+        where: { employeeId: employee.id },
+        data: {
+          isLiveTracking: false,
+          trackingStatus: 'INACTIVE',
+          attendanceStatus: calculatedStatus
+        }
+      }).catch(() => {});
+    }
+
+    // Auto-stop active live tracking session on punch out
+    await prisma.employeeLocationSession.updateMany({
+      where: { employeeId: employee.id, status: 'ACTIVE' },
+      data: { stoppedAt: now, status: 'STOPPED' }
+    }).catch(() => {});
+
+    if (employee.companyId) {
+      emitWorkforceEvent(employee.companyId, 'attendance:punch-out', {
+        employeeId: employee.id,
+        employeeName: `${employee.firstName} ${employee.lastName}`,
+        departmentId: employee.departmentId,
+        punchOutTime: now.toISOString(),
+        attendanceStatus: calculatedStatus
+      }, employee.departmentId || undefined);
     }
 
     return res.status(200).json(new ApiResponse(true, "Punched Out Successfully", {

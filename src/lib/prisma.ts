@@ -1,3 +1,8 @@
+import dns from 'node:dns';
+if (dns && typeof dns.setDefaultResultOrder === 'function') {
+  dns.setDefaultResultOrder('ipv4first');
+}
+
 import { PrismaClient } from '@prisma/client';
 import { withEncryption } from '../utils/prismaMiddleware';
 

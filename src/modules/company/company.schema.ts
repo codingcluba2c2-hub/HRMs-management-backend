@@ -30,4 +30,7 @@ export const updateCompanySchema = z.object({
     .optional()
     .nullable()
     .or(z.literal('')),
+  latitude: z.union([z.number(), z.string().transform(v => Number(v))]).optional().nullable(),
+  longitude: z.union([z.number(), z.string().transform(v => Number(v))]).optional().nullable(),
+  radiusMeters: z.union([z.number(), z.string().transform(v => Number(v))]).optional().nullable(),
 });

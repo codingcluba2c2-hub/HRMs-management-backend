@@ -71,6 +71,12 @@ model Company {
   candidates            Candidate[]
   jobApplications       JobApplication[]
   announcements         Announcement[]
+  officeLocations       OfficeLocation[]
+  attendanceLocations   AttendanceLocation[]
+  employeeLocationSessions EmployeeLocationSession[]
+  geofenceEvents        GeofenceEvent[]
+  employeeLocationLatests EmployeeLocationLatest[]
+  locationAuditLogs     LocationAuditLog[]
 }
 
 model User {
@@ -136,6 +142,7 @@ model Department {
   weeklyRosters WeeklyRoster[]
   managerScopes ManagerScope[]
   jobRoles      JobRole[]
+  officeLocations OfficeLocation[]
 
   @@index([companyId])
 }
@@ -254,6 +261,10 @@ model Employee {
   documents           EmployeeDocument[]
   rosterEntries       RosterEntry[]
   rosterAuditLogs     RosterAuditLog[]
+  attendanceLocations AttendanceLocation[]
+  locationSessions    EmployeeLocationSession[]
+  geofenceEvents      GeofenceEvent[]
+  locationLatest      EmployeeLocationLatest?
 
   @@index([email])
   @@index([userId])
@@ -990,5 +1001,148 @@ model GoogleSheetsSyncOutbox {
   @@index([status, createdAt])
   @@index([entityType, entityId])
 }
+
+model OfficeLocation {
+  id             String          @id @default(uuid())
+  companyId      String?
+  company        Company?        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId   String?
+  department     Department?     @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  name           String
+  address        String?
+  latitude       Float
+  longitude      Float
+  radiusMeters   Float           @default(150.0)
+  isActive       Boolean         @default(true)
+  createdById    String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  geofenceEvents GeofenceEvent[]
+
+  @@index([companyId])
+  @@index([departmentId])
+  @@index([isActive])
+}
+
+model AttendanceLocation {
+  id                        String    @id @default(uuid())
+  companyId                 String?
+  company                   Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  employeeId                String
+  employee                  Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  attendanceSessionId       String?   // AttendanceRecord id or AttendanceLog id
+  eventType                 String    // PUNCH_IN, PUNCH_OUT, LIVE_SAMPLE
+  latitude                  Float
+  longitude                 Float
+  accuracyMeters            Float
+  capturedAt                DateTime  @default(now())
+  source                    String    @default("BROWSER_GPS") // BROWSER_GPS, MANUAL_FALLBACK
+  locationUnavailableReason String?
+  createdAt                 DateTime  @default(now())
+
+  @@index([companyId])
+  @@index([employeeId])
+  @@index([attendanceSessionId])
+  @@index([capturedAt])
+}
+
+model EmployeeLocationSession {
+  id                    String    @id @default(uuid())
+  companyId             String?
+  company               Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  employeeId            String
+  employee              Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  attendanceSessionId   String?
+  consentedAt           DateTime  @default(now())
+  consentPolicyVersion  String    @default("1.0")
+  startedAt             DateTime  @default(now())
+  stoppedAt             DateTime?
+  status                String    @default("ACTIVE") // ACTIVE, STOPPED, REVOKED, EXPIRED
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([companyId])
+  @@index([employeeId])
+  @@index([status])
+  @@index([attendanceSessionId])
+}
+
+model GeofenceEvent {
+  id                  String         @id @default(uuid())
+  companyId           String?
+  company             Company?       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  employeeId          String
+  employee            Employee       @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  attendanceSessionId String?
+  officeLocationId    String
+  officeLocation      OfficeLocation @relation(fields: [officeLocationId], references: [id], onDelete: Cascade)
+  eventType           String         // ENTERED, EXITED
+  latitude            Float
+  longitude           Float
+  accuracyMeters      Float
+  occurredAt          DateTime       @default(now())
+  createdAt           DateTime       @default(now())
+
+  @@index([companyId])
+  @@index([employeeId])
+  @@index([officeLocationId])
+  @@index([occurredAt])
+  @@index([attendanceSessionId])
+}
+
+model EmployeeLocationLatest {
+  id                        String    @id @default(uuid())
+  companyId                 String?
+  company                   Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  employeeId                String    @unique
+  employee                  Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  latitude                  Float?
+  longitude                 Float?
+  accuracyMeters            Float?
+  lastUpdatedAt             DateTime?
+  trackingStatus            String    @default("INACTIVE") // ACTIVE, INACTIVE, PERMISSION_DENIED, UNAVAILABLE, STALE
+  geofenceStatus            String    @default("UNKNOWN") // INSIDE_OFFICE, OUTSIDE_OFFICE, LOCATION_UNAVAILABLE, LOCATION_STALE, UNCERTAIN
+  currentOfficeId           String?
+  distanceMeters            Float?
+  punchInLatitude           Float?
+  punchInLongitude          Float?
+  punchInAccuracyMeters     Float?
+  punchInCapturedAt         DateTime?
+  punchInUnavailableReason  String?
+  punchOutLatitude          Float?
+  punchOutLongitude         Float?
+  punchOutAccuracyMeters    Float?
+  punchOutCapturedAt        DateTime?
+  isLiveTracking            Boolean   @default(false)
+  attendanceStatus          String?   // PRESENT, YET_TO_CHECK_OUT, ON_BREAK, COMPLETED, NOT_PUNCHED_IN
+  lastGeofenceEventAt       DateTime?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  @@index([companyId])
+  @@index([geofenceStatus])
+  @@index([trackingStatus])
+  @@index([lastUpdatedAt])
+}
+
+model LocationAuditLog {
+  id                String    @id @default(uuid())
+  companyId         String?
+  company           Company?  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  actorId           String
+  targetEmployeeId  String?
+  action            String    // WORKFORCE_MAP_VIEW, LOCATION_HISTORY_VIEW, CONSENT_GRANTED, CONSENT_REVOKED, PURGE_HISTORY
+  details           Json?
+  ipAddress         String?
+  userAgent         String?
+  createdAt         DateTime  @default(now())
+
+  @@index([companyId])
+  @@index([actorId])
+  @@index([targetEmployeeId])
+  @@index([createdAt])
+}
+
 
 
