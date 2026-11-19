@@ -384,6 +384,9 @@ export const punchIn = async (req: Request, res: Response) => {
           punchInAccuracyMeters: numAcc,
           punchInCapturedAt: now,
           punchInUnavailableReason: null,
+          punchOutCapturedAt: null,
+          punchOutLatitude: null,
+          punchOutLongitude: null,
           latitude: numLat!,
           longitude: numLon!,
           accuracyMeters: numAcc,
@@ -399,6 +402,9 @@ export const punchIn = async (req: Request, res: Response) => {
           punchInAccuracyMeters: numAcc,
           punchInCapturedAt: now,
           punchInUnavailableReason: null,
+          punchOutCapturedAt: null,
+          punchOutLatitude: null,
+          punchOutLongitude: null,
           latitude: numLat!,
           longitude: numLon!,
           accuracyMeters: numAcc,
@@ -431,13 +437,21 @@ export const punchIn = async (req: Request, res: Response) => {
         create: {
           companyId: employee.companyId,
           employeeId: employee.id,
+          punchInCapturedAt: now,
           punchInUnavailableReason: reason,
+          punchOutCapturedAt: null,
+          punchOutLatitude: null,
+          punchOutLongitude: null,
           geofenceStatus: 'LOCATION_UNAVAILABLE',
           trackingStatus: 'UNAVAILABLE',
           attendanceStatus: 'PRESENT'
         },
         update: {
+          punchInCapturedAt: now,
           punchInUnavailableReason: reason,
+          punchOutCapturedAt: null,
+          punchOutLatitude: null,
+          punchOutLongitude: null,
           geofenceStatus: 'LOCATION_UNAVAILABLE',
           trackingStatus: 'UNAVAILABLE',
           attendanceStatus: 'PRESENT'
@@ -626,6 +640,8 @@ export const punchOut = async (req: Request, res: Response) => {
           punchOutLongitude: numLon!,
           punchOutAccuracyMeters: numAcc,
           punchOutCapturedAt: now,
+          latitude: null,
+          longitude: null,
           isLiveTracking: false,
           trackingStatus: 'INACTIVE',
           attendanceStatus: calculatedStatus
@@ -635,6 +651,9 @@ export const punchOut = async (req: Request, res: Response) => {
       await prisma.employeeLocationLatest.updateMany({
         where: { employeeId: employee.id },
         data: {
+          punchOutCapturedAt: now,
+          latitude: null,
+          longitude: null,
           isLiveTracking: false,
           trackingStatus: 'INACTIVE',
           attendanceStatus: calculatedStatus

@@ -345,24 +345,25 @@ export class WorkforceService {
       // Check if employee has punched in today or in current work session
       const isPunchInRecent = loc?.punchInCapturedAt && (nowMs - new Date(loc.punchInCapturedAt).getTime() < 24 * 3600 * 1000);
       const hasPunchedIn = Boolean(latestLog?.punchIn || (isPunchInRecent && loc?.punchInLatitude));
-      const isCurrentlyPunchedIn = Boolean(
-        (latestLog && !latestLog.punchOut) ||
-        (hasPunchedIn && !loc?.punchOutCapturedAt && isPunchInRecent)
-      );
+      
+      // True active session status:
+      // If latestLog exists, employee is currently punched in ONLY if punchOut is null!
+      let isCurrentlyPunchedIn = false;
+      if (latestLog) {
+        isCurrentlyPunchedIn = !latestLog.punchOut;
+      } else if (loc?.punchInLatitude && isPunchInRecent) {
+        isCurrentlyPunchedIn = !loc.punchOutCapturedAt;
+      }
 
       // Attendance status
       let attendanceStatus = 'NOT_PUNCHED_IN';
       if (isCurrentlyPunchedIn) {
         const onBreak = todayRecord?.breaks?.some((b: any) => !b.breakEnd);
         attendanceStatus = onBreak ? 'ON_BREAK' : 'PRESENT';
-      } else if (hasPunchedIn) {
-        attendanceStatus = 'COMPLETED';
+      } else if (latestLog?.punchOut || loc?.punchOutCapturedAt) {
+        attendanceStatus = 'PUNCHED_OUT';
       } else if (todayRecord) {
         attendanceStatus = todayRecord.status || 'ABSENT';
-      }
-
-      if (hasPunchedIn) {
-        totalPresentToday++;
       }
 
       // Location details
@@ -377,24 +378,27 @@ export class WorkforceService {
         : null) || defaultOffice;
 
       // Determine active coordinate (live location if available, otherwise punch-in location)
+      // If employee is not currently punched in (i.e. punched out), do not broadcast active coordinates on the live map
       let activeLat: number | null = null;
       let activeLon: number | null = null;
       let activeAccuracy: number = 0;
       let lastUpdated: Date | null = null;
       let locationSource: 'LIVE' | 'PUNCH_IN' | 'NONE' = 'NONE';
 
-      if (loc && isValidCoordinate(loc.latitude, loc.longitude)) {
-        activeLat = loc.latitude!;
-        activeLon = loc.longitude!;
-        activeAccuracy = loc.accuracyMeters || 10;
-        lastUpdated = loc.lastUpdatedAt || loc.updatedAt;
-        locationSource = 'LIVE';
-      } else if (loc && isValidCoordinate(loc.punchInLatitude, loc.punchInLongitude)) {
-        activeLat = loc.punchInLatitude!;
-        activeLon = loc.punchInLongitude!;
-        activeAccuracy = loc.punchInAccuracyMeters || 15;
-        lastUpdated = loc.punchInCapturedAt || todayRecord?.createdAt || null;
-        locationSource = 'PUNCH_IN';
+      if (isCurrentlyPunchedIn) {
+        if (loc && isValidCoordinate(loc.latitude, loc.longitude)) {
+          activeLat = loc.latitude!;
+          activeLon = loc.longitude!;
+          activeAccuracy = loc.accuracyMeters || 10;
+          lastUpdated = loc.lastUpdatedAt || loc.updatedAt;
+          locationSource = 'LIVE';
+        } else if (loc && isValidCoordinate(loc.punchInLatitude, loc.punchInLongitude)) {
+          activeLat = loc.punchInLatitude!;
+          activeLon = loc.punchInLongitude!;
+          activeAccuracy = loc.punchInAccuracyMeters || 15;
+          lastUpdated = loc.punchInCapturedAt || todayRecord?.createdAt || null;
+          locationSource = 'PUNCH_IN';
+        }
       }
 
       // Evaluate geofence
@@ -418,26 +422,30 @@ export class WorkforceService {
         isStale = evalResult.isStale;
       }
 
-      // KPI tallying
-      if (!hasPunchedIn) {
+      // KPI tallying - ONLY count currently active (punched in) workforce on map!
+      if (!isCurrentlyPunchedIn) {
         locationUnavailableCount++;
       } else if (geofenceStatus === 'INSIDE_OFFICE') {
         insideOfficeCount++;
+        totalPresentToday++;
       } else if (geofenceStatus === 'OUTSIDE_OFFICE' || geofenceStatus === 'UNCERTAIN') {
         outsideOfficeCount++;
+        totalPresentToday++;
       } else if (geofenceStatus === 'LOCATION_STALE') {
         staleLocationCount++;
+        totalPresentToday++;
       } else {
         locationUnavailableCount++;
+        totalPresentToday++;
       }
 
       // Marker style determination
       let markerColor: 'green' | 'orange' | 'blue' | 'grey' | 'red' = 'grey';
       let markerLabel = 'Location Unavailable';
 
-      if (!hasPunchedIn) {
+      if (!isCurrentlyPunchedIn) {
         markerColor = 'grey';
-        markerLabel = 'Not Punched In';
+        markerLabel = latestLog?.punchOut ? 'Punched Out' : 'Not Punched In';
       } else if (isLiveTracking) {
         markerColor = 'blue';
         markerLabel = `Live Sharing (${geofenceStatus === 'INSIDE_OFFICE' ? 'Inside' : 'Outside'})`;
@@ -485,15 +493,15 @@ export class WorkforceService {
         shift: emp.shift ? `${emp.shift.name} (${emp.shift.startTime} - ${emp.shift.endTime})` : 'Standard',
         attendanceStatus,
         isCurrentlyPunchedIn,
-        punchInTime: latestLog?.punchIn || loc?.punchInCapturedAt || null,
-        punchOutTime: latestLog?.punchOut || loc?.punchOutCapturedAt || null,
-        punchInCoordinates: (loc?.punchInLatitude && loc?.punchInLongitude) ? {
+        punchInTime: isCurrentlyPunchedIn ? (latestLog?.punchIn || loc?.punchInCapturedAt || null) : null,
+        punchOutTime: isCurrentlyPunchedIn ? null : (latestLog?.punchOut || loc?.punchOutCapturedAt || null),
+        punchInCoordinates: (isCurrentlyPunchedIn && loc?.punchInLatitude && loc?.punchInLongitude) ? {
           latitude: loc.punchInLatitude,
           longitude: loc.punchInLongitude,
           accuracyMeters: loc.punchInAccuracyMeters,
           capturedAt: loc.punchInCapturedAt
         } : null,
-        activeLocation: (activeLat !== null && activeLon !== null) ? {
+        activeLocation: (isCurrentlyPunchedIn && activeLat !== null && activeLon !== null) ? {
           latitude: activeLat,
           longitude: activeLon,
           accuracyMeters: activeAccuracy,
